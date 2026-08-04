@@ -540,8 +540,16 @@ export const fetchWithRetry = async (url: string, options: any, retries = 5, del
 };
 
 export const callGemini = async (promptText: string, isJson = false, tools: any[] = []) => {
+  const hasTools = !!(tools && tools.length > 0);
+  // Google Search Grounding TIDAK BISA dipakai bersamaan dengan mode responseMimeType JSON (dilarang oleh Gemini API).
+  // Kalau keduanya diminta sekaligus, minta JSON lewat instruksi teks di prompt saja —
+  // extractAndParseJson di kode ini sudah dirancang tahan terhadap format begini.
+  const finalPromptText = (isJson && hasTools)
+    ? `${promptText}\n\nPENTING: Balas HANYA dengan JSON valid sesuai skema yang diminta, tanpa markdown code fence (\`\`\`), tanpa penjelasan atau teks tambahan apa pun di luar JSON.`
+    : promptText;
+
   const payload: any = {
-    contents: [{ parts: [{ text: promptText }] }],
+    contents: [{ parts: [{ text: finalPromptText }] }],
     systemInstruction: {
       parts: [{
         text: "Anda adalah AGE YT#1 Master Core Engine v2.5. Tugas Anda adalah merespons dengan kreativitas super tinggi, menyusun analisis tren YouTube premium, dan mengembalikan data yang terstruktur rapi sesuai parameter."
@@ -549,11 +557,11 @@ export const callGemini = async (promptText: string, isJson = false, tools: any[
     }
   };
 
-  if (tools && tools.length > 0) {
+  if (hasTools) {
     payload.tools = tools;
   }
 
-  if (isJson) {
+  if (isJson && !hasTools) {
     payload.generationConfig = {
       responseMimeType: "application/json"
     };
@@ -565,7 +573,7 @@ export const callGemini = async (promptText: string, isJson = false, tools: any[
     body: JSON.stringify(payload)
   };
 
-  return await fetchWithKeyFailover((key) => getUrl('gemini-3.5-flash:generateContent', key), options);
+  return await fetchWithKeyFailover((key) => getUrl('gemini-3-flash-preview:generateContent', key), options);
 };
 
 // Stage 2 Abstraction Wrappers (diperluas Tahap 4 dengan fallback multi-provider)
