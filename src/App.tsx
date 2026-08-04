@@ -562,7 +562,7 @@ export const callGemini = async (promptText: string, isJson = false, tools: any[
     body: JSON.stringify(payload)
   };
 
-  return await fetchWithKeyFailover((key) => getUrl('gemini-3-flash-preview:generateContent', key), options);
+  return await fetchWithKeyFailover((key) => getUrl('gemini-3.5-flash:generateContent', key), options);
 };
 
 // Stage 2 Abstraction Wrappers (diperluas Tahap 4 dengan fallback multi-provider)
@@ -618,7 +618,7 @@ export const generateImage = async (parts: any[], aspectRatio: string = '16:9') 
   };
 
   try {
-    return await fetchWithKeyFailover((key) => getUrl('gemini-3.1-flash-image-preview:generateContent', key), options);
+    return await fetchWithKeyFailover((key) => getUrl('gemini-3.1-flash-image:generateContent', key), options);
   } catch (geminiError: any) {
     // Kalau generate ini butuh referensi wajah (image-to-image), Pollinations.ai TIDAK bisa mereproduksi wajah tersebut —
     // jangan fallback diam-diam karena hasilnya akan menyesatkan (wajah karakter hilang). Lempar error asli saja.
