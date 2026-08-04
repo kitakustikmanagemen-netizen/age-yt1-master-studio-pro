@@ -3626,7 +3626,8 @@ Kembalikan dalam format JSON yang valid:
                         />
                         <button 
                           onClick={handleDiscoverTopics}
-                          className={`py-2 px-3 text-xs font-bold rounded-lg transition-all flex items-center gap-1.5 shrink-0 ${
+                          disabled={processingState.active}
+                          className={`py-2 px-3 text-xs font-bold rounded-lg transition-all flex items-center gap-1.5 shrink-0 disabled:opacity-50 disabled:cursor-not-allowed ${
                             darkMode ? 'bg-indigo-600 hover:bg-indigo-700 text-white' : 'bg-slate-900 hover:bg-slate-955 text-white'
                           }`}
                         >
