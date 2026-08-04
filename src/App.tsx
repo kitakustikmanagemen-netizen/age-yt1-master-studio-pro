@@ -1897,14 +1897,31 @@ Kembalikan data dalam format JSON yang valid dengan skema berikut:
 }`;
 
     try {
-      const data = await generateText(promptText, { isJson: true, tools: [{ googleSearch: {} }] });
+      let data: any;
+      let usedFallbackWithoutSearch = false;
+      try {
+        data = await generateText(promptText, { isJson: true, tools: [{ googleSearch: {} }] });
+      } catch (searchErr: any) {
+        // Google Search Grounding tampaknya punya batas kuota tersendiri yang lebih ketat.
+        // Kalau ini gagal karena kuota/key, coba lagi TANPA grounding — masih dari Gemini dulu,
+        // dan generateText otomatis lanjut ke OpenRouter/Groq kalau Gemini juga habis.
+        if (searchErr instanceof NoApiKeyError || searchErr instanceof AllApiKeysExhaustedError) {
+          usedFallbackWithoutSearch = true;
+          data = await generateText(promptText, { isJson: true });
+        } else {
+          throw searchErr;
+        }
+      }
       const textResponse = data.candidates?.[0]?.content?.parts?.[0]?.text;
 
       if (textResponse) {
         const parsed = extractAndParseJson(textResponse);
         if (parsed && parsed.topics && Array.isArray(parsed.topics)) {
           setTopics(parsed.topics);
-          setSelectedTopics([]); 
+          setSelectedTopics([]);
+          if (usedFallbackWithoutSearch) {
+            setErrorMessage("Catatan: Google Search Grounding sedang kena limit, jadi ide topik ini dibuat TANPA data pencarian real-time. Hasilnya mungkin kurang up-to-date dibanding biasanya.");
+          }
         } else {
           throw new Error("Format respons tidak valid atau tidak memuat array topik.");
         }
