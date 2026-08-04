@@ -298,7 +298,10 @@ export const fetchWithKeyFailover = async (buildUrl: (key: string) => string, op
   for (const storedKey of activeKeys) {
     try {
       const url = buildUrl(storedKey.key.trim());
-      const result = await fetchWithRetry(url, options, 1, 800);
+      // retries=0: satu key hanya dicoba SEKALI. Kalau gagal karena kuota/rate-limit,
+      // langsung pindah ke key berikutnya (failover) alih-alih retry di key yang sama —
+      // retry di key yang sama untuk error 429 hanya memboroskan jatah RPM yang sudah ketat.
+      const result = await fetchWithRetry(url, options, 0, 800);
       recordKeyUsage(storedKey.id);
       return result;
     } catch (error) {
@@ -347,7 +350,7 @@ const callOpenAiCompatibleText = async (storedKey: StoredApiKey, promptText: str
       Authorization: `Bearer ${storedKey.key.trim()}`
     },
     body: JSON.stringify(payload)
-  }, 1, 800);
+  }, 0, 800);
 
   const content = data?.choices?.[0]?.message?.content;
   if (!content) throw new Error(`Provider fallback (${provider}) tidak mengembalikan konten teks yang valid.`);
