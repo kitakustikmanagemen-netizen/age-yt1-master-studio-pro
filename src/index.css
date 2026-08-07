@@ -9,5 +9,6 @@ html, body, #root {
 }
 
 body {
-  background-color: #09090b;
+  background-color: #0f0f0f;
+  font-family: 'Roboto', system-ui, -apple-system, sans-serif;
 }

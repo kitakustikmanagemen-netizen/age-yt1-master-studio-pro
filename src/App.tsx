@@ -142,6 +142,31 @@ export const LOGO_SVG = `data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2
 const API_KEYS_STORAGE_KEY = 'age_yt_user_api_keys';
 const KEY_USAGE_STORAGE_KEY = 'age_yt_key_usage_daily';
 const ONBOARDING_SEEN_STORAGE_KEY = 'age_yt_onboarding_seen';
+const IMAGE_BILLING_REQUIRED_FLAG_KEY = 'age_yt_image_billing_required';
+
+export const isImageBillingRequiredFlagSet = (): boolean => {
+  try {
+    return localStorage.getItem(IMAGE_BILLING_REQUIRED_FLAG_KEY) === '1';
+  } catch (e) {
+    return false;
+  }
+};
+
+export const markImageBillingRequired = (): void => {
+  try {
+    localStorage.setItem(IMAGE_BILLING_REQUIRED_FLAG_KEY, '1');
+  } catch (e) {
+    // no-op
+  }
+};
+
+export const clearImageBillingRequiredFlag = (): void => {
+  try {
+    localStorage.removeItem(IMAGE_BILLING_REQUIRED_FLAG_KEY);
+  } catch (e) {
+    // no-op
+  }
+};
 
 interface KeyUsageRecord {
   date: string;
@@ -267,9 +292,20 @@ export class NoApiKeyError extends Error {
   }
 }
 
+// Mendeteksi kasus SPESIFIK: model tidak punya alokasi gratis SAMA SEKALI (limit: 0),
+// beda dari kuota yang sekadar habis/ketat — ini kebijakan tetap Google, retry/tunggu tidak akan membantu.
+const isZeroFreeTierLimit = (error: any): boolean => {
+  const msg = (error?.message || '').toString().toLowerCase();
+  return msg.includes('free_tier') && (msg.includes('limit: 0') || msg.includes('limit:0'));
+};
+
 export class AllApiKeysExhaustedError extends Error {
   constructor(detail?: string) {
-    super('Semua API Key yang terpasang sudah mencapai batas kuota atau tidak valid. Tambahkan key baru, aktifkan key lain, atau tunggu beberapa saat lalu coba lagi.' + (detail ? ` (Detail: ${detail})` : ''));
+    const zeroFreeTier = isZeroFreeTierLimit({ message: detail });
+    const baseMessage = zeroFreeTier
+      ? 'Model AI ini TIDAK memiliki alokasi gratis sama sekali dari Google (limit: 0) — ini kebijakan tetap, bukan kuota yang sedang habis. Menunggu atau menambah API Key baru TIDAK akan membantu. Satu-satunya cara: aktifkan billing di Google Cloud Project milik API Key Anda (biayanya sangat kecil, lihat panduan di README).'
+      : 'Semua API Key yang terpasang sudah mencapai batas kuota atau tidak valid. Tambahkan key baru, aktifkan key lain, atau tunggu beberapa saat lalu coba lagi.';
+    super(baseMessage + (detail ? ` (Detail: ${detail})` : ''));
     this.name = 'AllApiKeysExhaustedError';
   }
 }
@@ -612,9 +648,28 @@ export const generateText = async (promptText: string, options?: { isJson?: bool
   }
 };
 
+// Dilempar khusus saat: generate gambar BUTUH referensi wajah, tapi semua key Gemini
+// yang tersedia tidak punya billing aktif (limit:0 di tier gratis). Membawa promptText
+// supaya UI bisa menawarkan itu sebagai teks yang bisa disalin user, alih-alih gagal total.
+export class ImageBillingRequiredError extends Error {
+  promptText: string;
+  constructor(promptText: string) {
+    super('Generate gambar dengan referensi wajah membutuhkan billing aktif di Google Cloud Project API Key Anda.');
+    this.name = 'ImageBillingRequiredError';
+    this.promptText = promptText;
+  }
+}
+
 const hasImageReferenceParts = (parts: any[]): boolean => parts.some((p: any) => p && p.inlineData);
 
 export const generateImage = async (parts: any[], aspectRatio: string = '16:9') => {
+  // Kalau kita SUDAH TAHU dari percobaan sebelumnya bahwa billing dibutuhkan untuk generate berwajah,
+  // langsung beri tahu tanpa buang-buang panggilan API lagi.
+  if (hasImageReferenceParts(parts) && isImageBillingRequiredFlagSet()) {
+    const textPart = parts.find((p: any) => p && typeof p.text === 'string');
+    throw new ImageBillingRequiredError(textPart?.text || '');
+  }
+
   const payload = {
     contents: [{ role: 'user', parts }],
     generationConfig: {
@@ -632,8 +687,14 @@ export const generateImage = async (parts: any[], aspectRatio: string = '16:9') 
     return await fetchWithKeyFailover((key) => getUrl('gemini-3.1-flash-image:generateContent', key), options);
   } catch (geminiError: any) {
     // Kalau generate ini butuh referensi wajah (image-to-image), Pollinations.ai TIDAK bisa mereproduksi wajah tersebut —
-    // jangan fallback diam-diam karena hasilnya akan menyesatkan (wajah karakter hilang). Lempar error asli saja.
+    // jangan fallback diam-diam karena hasilnya akan menyesatkan (wajah karakter hilang).
     if (hasImageReferenceParts(parts)) {
+      const textPart = parts.find((p: any) => p && typeof p.text === 'string');
+      const promptText = textPart?.text || '';
+      if (isZeroFreeTierLimit(geminiError)) {
+        markImageBillingRequired();
+        throw new ImageBillingRequiredError(promptText);
+      }
       throw geminiError;
     }
     if (!(geminiError instanceof NoApiKeyError) && !(geminiError instanceof AllApiKeysExhaustedError)) {
@@ -805,16 +866,16 @@ export const ProcessingOverlay: React.FC<{
     <div className="fixed inset-0 z-[250] flex items-center justify-center p-4 bg-zinc-950/80 backdrop-blur-md">
       <div className="p-8 rounded-3xl max-w-md w-full border text-center shadow-2xl bg-zinc-900 border-zinc-800 text-zinc-100">
         <div className="relative w-24 h-24 mx-auto mb-6 flex items-center justify-center">
-          <div className="absolute inset-0 rounded-full border-4 border-indigo-500/30 border-t-indigo-500 animate-spin"></div>
+          <div className="absolute inset-0 rounded-full border-4 border-red-500/30 border-t-red-500 animate-spin"></div>
           <img 
             src={LOGO_SVG} 
             alt="AGE YT#1 Master Process Logo" 
-            className="w-20 h-20 rounded-full object-cover shadow-lg border border-indigo-500/20"
+            className="w-20 h-20 rounded-full object-cover shadow-lg border border-red-500/20"
           />
         </div>
         <h4 className="text-lg font-extrabold tracking-tight mb-2 text-zinc-100">{title}</h4>
         <p className="text-xs leading-relaxed text-zinc-400">{message}</p>
-        <div className="mt-6 flex items-center justify-center gap-1.5 text-[10px] uppercase font-bold tracking-widest text-indigo-500 animate-pulse">
+        <div className="mt-6 flex items-center justify-center gap-1.5 text-[10px] uppercase font-bold tracking-widest text-red-500 animate-pulse">
           <Sparkles className="h-3.5 w-3.5" />
           <span>Memproses dengan AI...</span>
         </div>
@@ -832,7 +893,7 @@ export const ResetModal: React.FC<{
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
       <div className="p-6 rounded-2xl max-w-sm w-full border text-center shadow-2xl bg-zinc-900 border-zinc-800 text-zinc-100">
-        <HelpCircle className="h-10 w-10 text-indigo-500 mx-auto mb-3" />
+        <HelpCircle className="h-10 w-10 text-red-500 mx-auto mb-3" />
         <h4 className="text-base font-bold">Mulai Proyek Baru?</h4>
         <p className="text-xs text-zinc-400 mt-2">
           Tindakan ini akan menghapus semua kemajuan proyek yang sedang aktif saat ini.
@@ -859,7 +920,7 @@ export const ResetModal: React.FC<{
 const PROVIDER_INFO: Record<ApiProvider, { label: string; badgeClass: string; signupUrl: string; signupLabel: string; note: string }> = {
   gemini: {
     label: 'Gemini',
-    badgeClass: 'bg-indigo-500/15 text-indigo-400',
+    badgeClass: 'bg-red-500/15 text-red-400',
     signupUrl: 'https://aistudio.google.com/apikey',
     signupLabel: 'Dapatkan gratis di Google AI Studio',
     note: 'Mendukung SEMUA fitur (teks, gambar dengan referensi wajah, TTS, riset real-time).'
@@ -983,7 +1044,7 @@ export const ApiKeyModal: React.FC<{
                 onClick={() => setNewProvider(p)}
                 className={`flex-1 py-1.5 rounded-lg text-[10px] font-bold border ${
                   newProvider === p
-                    ? 'bg-indigo-600 border-indigo-600 text-white'
+                    ? 'bg-red-600 border-red-600 text-white'
                     : 'border-zinc-800 text-zinc-400 hover:bg-zinc-800'
                 }`}
               >
@@ -998,14 +1059,14 @@ export const ApiKeyModal: React.FC<{
             value={newLabel}
             onChange={(e) => setNewLabel(e.target.value)}
             placeholder="Label (opsional), mis. Key Utama"
-            className="w-full p-2 rounded-lg bg-zinc-950 border border-zinc-800 text-xs focus:outline-none focus:border-indigo-500"
+            className="w-full p-2 rounded-lg bg-zinc-950 border border-zinc-800 text-xs focus:outline-none focus:border-red-500"
           />
           <input
             type="password"
             value={newKey}
             onChange={(e) => setNewKey(e.target.value)}
             placeholder={`Tempel API Key ${PROVIDER_INFO[newProvider].label} Anda di sini`}
-            className="w-full p-2 rounded-lg bg-zinc-950 border border-zinc-800 text-xs font-mono focus:outline-none focus:border-indigo-500"
+            className="w-full p-2 rounded-lg bg-zinc-950 border border-zinc-800 text-xs font-mono focus:outline-none focus:border-red-500"
           />
 
           {newProvider !== 'gemini' && (
@@ -1022,14 +1083,14 @@ export const ApiKeyModal: React.FC<{
               value={newModel}
               onChange={(e) => setNewModel(e.target.value)}
               placeholder={`Model (opsional), default otomatis dipakai jika kosong`}
-              className="w-full p-2 rounded-lg bg-zinc-950 border border-zinc-800 text-xs font-mono focus:outline-none focus:border-indigo-500"
+              className="w-full p-2 rounded-lg bg-zinc-950 border border-zinc-800 text-xs font-mono focus:outline-none focus:border-red-500"
             />
           )}
 
           <button
             onClick={handleAdd}
             disabled={!newKey.trim()}
-            className="w-full py-2 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 disabled:cursor-not-allowed text-white text-xs font-bold rounded-lg flex items-center justify-center gap-1.5"
+            className="w-full py-2 bg-red-600 hover:bg-red-700 disabled:opacity-40 disabled:cursor-not-allowed text-white text-xs font-bold rounded-lg flex items-center justify-center gap-1.5"
           >
             <Plus className="h-3.5 w-3.5" /> Tambah Key
           </button>
@@ -1037,13 +1098,117 @@ export const ApiKeyModal: React.FC<{
             href={PROVIDER_INFO[newProvider].signupUrl}
             target="_blank"
             rel="noopener noreferrer"
-            className="block text-center text-[10px] text-indigo-400 hover:underline"
+            className="block text-center text-[10px] text-red-400 hover:underline"
           >
             Belum punya API Key? {PROVIDER_INFO[newProvider].signupLabel} →
           </a>
           <p className="text-[10px] text-zinc-600 text-center pt-1 border-t border-zinc-800/60">
             💡 Tanpa key sekalipun, generate gambar TANPA referensi wajah tetap bisa jalan lewat fallback gratis Pollinations.ai.
           </p>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export const ImageBillingRequiredModal: React.FC<{
+  data: { imagePrompt: string; videoPrompt?: string } | null;
+  onClose: () => void;
+  onOpenApiKeySettings: () => void;
+}> = ({ data, onClose, onOpenApiKeySettings }) => {
+  const [copiedField, setCopiedField] = useState<string | null>(null);
+
+  if (!data) return null;
+
+  const copyField = (text: string, field: string) => {
+    if (!text) return;
+    const doCopyFallback = () => {
+      const textarea = document.createElement('textarea');
+      textarea.value = text;
+      textarea.style.position = 'fixed';
+      textarea.style.opacity = '0';
+      document.body.appendChild(textarea);
+      textarea.focus();
+      textarea.select();
+      try { document.execCommand('copy'); } catch (e) { /* no-op */ }
+      document.body.removeChild(textarea);
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).catch(doCopyFallback);
+    } else {
+      doCopyFallback();
+    }
+    setCopiedField(field);
+    setTimeout(() => setCopiedField(prev => (prev === field ? null : prev)), 2000);
+  };
+
+  return (
+    <div className="fixed inset-0 z-[170] flex items-center justify-center p-4 bg-black/85 backdrop-blur-sm">
+      <div className="p-6 rounded-2xl max-w-lg w-full border shadow-2xl bg-zinc-900 border-zinc-800 text-zinc-100 max-h-[85vh] overflow-y-auto">
+        <div className="flex items-center justify-between mb-1">
+          <h4 className="text-base font-bold flex items-center gap-2 text-amber-400">
+            <span>⚠️</span> Generate Gambar Butuh Billing Aktif
+          </h4>
+          <button onClick={onClose} className="p-1.5 rounded-lg text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        <p className="text-[11px] text-zinc-400 mt-2 leading-relaxed">
+          Google TIDAK menyediakan kuota gratis sama sekali untuk generate gambar dengan referensi wajah (kebijakan resmi, bukan bug atau kuota yang sekadar habis). Menunggu atau menambah API Key baru tidak akan membantu — satu-satunya cara adalah mengaktifkan billing di Google Cloud Project milik API Key Anda.
+        </p>
+
+        <div className="mt-3 p-2.5 rounded-xl border border-amber-500/20 bg-amber-500/10 text-[11px] text-amber-300">
+          Jangan khawatir — di bawah ini tetap kami siapkan <b>teks prompt</b> hasil AI yang bisa Anda salin dan generate secara manual di tool gambar/video AI lain (Midjourney, Leonardo.ai, Veo, Kling, dll).
+        </div>
+
+        <div className="mt-4 space-y-3">
+          <div>
+            <div className="flex items-center justify-between mb-1">
+              <p className="text-[11px] font-bold text-zinc-400">🖼️ Prompt Gambar</p>
+              <button
+                onClick={() => copyField(data.imagePrompt, 'image')}
+                className="text-[10px] px-2 py-1 rounded-lg bg-zinc-800 hover:bg-zinc-700 flex items-center gap-1"
+              >
+                {copiedField === 'image' ? <><Check className="h-3 w-3" /> Tersalin</> : <><Copy className="h-3 w-3" /> Salin</>}
+              </button>
+            </div>
+            <div className="p-2.5 rounded-xl border border-zinc-800 bg-zinc-950 text-[11px] text-zinc-300 max-h-28 overflow-y-auto whitespace-pre-wrap">
+              {data.imagePrompt || '(Prompt tidak tersedia)'}
+            </div>
+          </div>
+
+          {data.videoPrompt && (
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <p className="text-[11px] font-bold text-zinc-400">🎬 Prompt Video</p>
+                <button
+                  onClick={() => copyField(data.videoPrompt || '', 'video')}
+                  className="text-[10px] px-2 py-1 rounded-lg bg-zinc-800 hover:bg-zinc-700 flex items-center gap-1"
+                >
+                  {copiedField === 'video' ? <><Check className="h-3 w-3" /> Tersalin</> : <><Copy className="h-3 w-3" /> Salin</>}
+                </button>
+              </div>
+              <div className="p-2.5 rounded-xl border border-zinc-800 bg-zinc-950 text-[11px] text-zinc-300 max-h-28 overflow-y-auto whitespace-pre-wrap">
+                {data.videoPrompt}
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="border-t border-zinc-800 mt-4 pt-4 space-y-2">
+          <p className="text-[11px] font-bold text-zinc-400">Cara Mengaktifkan Billing (Biaya Sangat Kecil)</p>
+          <ol className="text-[11px] text-zinc-400 list-decimal list-inside space-y-1">
+            <li>Buka <a href="https://console.cloud.google.com/billing" target="_blank" rel="noopener noreferrer" className="text-red-400 hover:underline">console.cloud.google.com/billing</a>, login akun yang sama dengan API Key Anda.</li>
+            <li>Buat/hubungkan billing account, lalu tautkan ke project API Key Anda.</li>
+            <li>Set budget alert kecil (mis. Rp20-50rb/bulan) supaya terkontrol.</li>
+          </ol>
+          <button
+            onClick={() => { onClose(); onOpenApiKeySettings(); }}
+            className="w-full py-2 bg-red-600 hover:bg-red-700 text-white text-xs font-bold rounded-lg mt-2"
+          >
+            Buka Pengaturan API Key
+          </button>
         </div>
       </div>
     </div>
@@ -1073,7 +1238,7 @@ export const OnboardingModal: React.FC<{
               onDismiss();
               onOpenApiKeySettings();
             }}
-            className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-lg flex items-center justify-center gap-2"
+            className="w-full py-2.5 bg-red-600 hover:bg-red-700 text-white text-xs font-bold rounded-lg flex items-center justify-center gap-2"
           >
             <KeyRound className="h-4 w-4" /> Pasang API Key Sekarang
           </button>
@@ -1106,7 +1271,7 @@ export const ImagePreviewModal: React.FC<{
           <a
             href={previewData.url}
             download={`${previewData.title.replace(/\s+/g, '_')}.png`}
-            className="px-3 py-1.5 bg-indigo-600 text-white rounded-lg text-xs font-bold flex items-center gap-1"
+            className="px-3 py-1.5 bg-red-600 text-white rounded-lg text-xs font-bold flex items-center gap-1"
           >
             <span>📥</span> Unduh Gambar
           </a>
@@ -1172,9 +1337,9 @@ export const CanvasEditorModal: React.FC<{
       <div className="relative max-w-5xl w-full max-h-[92vh] overflow-y-auto rounded-3xl border border-zinc-800 bg-zinc-900 p-6 shadow-2xl text-zinc-100 space-y-6" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between pb-4 border-b border-zinc-800">
           <div className="flex items-center gap-2">
-            <Palette className="h-5 w-5 text-indigo-400" />
+            <Palette className="h-5 w-5 text-red-400" />
             <h3 className="text-base font-extrabold tracking-tight">Interactive Canvas Studio & Layer Editor</h3>
-            <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">
+            <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-red-500/10 text-red-400 border border-red-500/20">
               {selectedThumbnail.title}
             </span>
           </div>
@@ -1193,7 +1358,7 @@ export const CanvasEditorModal: React.FC<{
             }`}>
               {isRenderingCanvas ? (
                 <div className="flex flex-col items-center justify-center p-6">
-                  <div className="w-8 h-8 border-3 border-indigo-500 border-t-transparent rounded-full animate-spin mb-2"></div>
+                  <div className="w-8 h-8 border-3 border-red-500 border-t-transparent rounded-full animate-spin mb-2"></div>
                   <span className="text-xs text-zinc-400 font-bold">Compositing Canvas Layers...</span>
                 </div>
               ) : canvasPreviewUrl ? (
@@ -1224,7 +1389,7 @@ export const CanvasEditorModal: React.FC<{
 
           <div className="lg:col-span-5 space-y-4">
             <div className="p-4 rounded-2xl border border-zinc-800 bg-zinc-950/60 space-y-3">
-              <h4 className="text-xs font-extrabold uppercase tracking-wider text-indigo-400 flex items-center gap-1.5">
+              <h4 className="text-xs font-extrabold uppercase tracking-wider text-red-400 flex items-center gap-1.5">
                 <Type className="h-4 w-4" /> 1. Layer Teks Overlay High-CTR
               </h4>
 
@@ -1260,7 +1425,7 @@ export const CanvasEditorModal: React.FC<{
                       <button
                         key={hex}
                         onClick={() => setCanvasStrokeColor(hex)}
-                        className={`w-6 h-6 rounded-full border-2 ${canvasStrokeColor === hex ? 'border-indigo-400 scale-110' : 'border-transparent'}`}
+                        className={`w-6 h-6 rounded-full border-2 ${canvasStrokeColor === hex ? 'border-red-400 scale-110' : 'border-transparent'}`}
                         style={{ backgroundColor: hex }}
                       />
                     ))}
@@ -1278,7 +1443,7 @@ export const CanvasEditorModal: React.FC<{
                   max={95}
                   value={canvasFontSize}
                   onChange={(e) => setCanvasFontSize(parseInt(e.target.value))}
-                  className="w-full accent-indigo-500"
+                  className="w-full accent-red-500"
                 />
               </div>
 
@@ -1290,7 +1455,7 @@ export const CanvasEditorModal: React.FC<{
                       <button
                         key={pos}
                         onClick={() => setCanvasTextPosition(pos)}
-                        className={`flex-1 py-1 capitalize rounded ${canvasTextPosition === pos ? 'bg-indigo-600 text-white' : 'text-zinc-400'}`}
+                        className={`flex-1 py-1 capitalize rounded ${canvasTextPosition === pos ? 'bg-red-600 text-white' : 'text-zinc-400'}`}
                       >
                         {pos}
                       </button>
@@ -1395,13 +1560,13 @@ export const Header: React.FC<{
             onClick={() => setIsSidebarOpen(true)}
             className="p-1.5 rounded-xl border border-zinc-800 hover:bg-zinc-800 text-zinc-300 transition-colors flex items-center gap-1 text-xs font-bold"
           >
-            <PanelLeftOpen className="h-4 w-4 text-indigo-400" />
+            <PanelLeftOpen className="h-4 w-4 text-red-400" />
             <span className="hidden sm:inline">Navigasi</span>
           </button>
         )}
 
         <div className="flex items-center gap-2">
-          <span className="text-xs font-black uppercase tracking-wider text-indigo-400">
+          <span className="text-xs font-black uppercase tracking-wider text-red-400">
             Langkah {activeStep}: {STEPS_LIST[activeStep - 1].label}
           </span>
           <span className="text-xs text-zinc-500 hidden sm:inline">•</span>
@@ -1552,7 +1717,7 @@ export const Sidebar: React.FC<{
               }}
               className={`w-full p-2.5 rounded-xl text-left transition-all flex items-center justify-between group ${
                 isActive
-                  ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/30'
+                  ? 'bg-red-600 text-white shadow-lg shadow-red-600/30'
                   : isCompleted
                     ? 'bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 border border-emerald-500/20'
                     : 'text-zinc-400 hover:bg-zinc-800/60 hover:text-zinc-200'
@@ -1648,6 +1813,10 @@ export function App() {
 
   const handleAddApiKey = (label: string, key: string, provider: ApiProvider, model?: string) => {
     setUserApiKeys(addApiKey(label, key, provider, model));
+    if (provider === 'gemini') {
+      // User mungkin baru saja mengaktifkan billing atau ganti akun — beri kesempatan coba lagi.
+      clearImageBillingRequiredFlag();
+    }
   };
 
   const handleRemoveApiKey = (id: string) => {
@@ -1740,6 +1909,17 @@ export function App() {
   const [copiedStates, setCopiedStates] = useState<Record<string, boolean>>({});
   const [improvingIndex, setImprovingIndex] = useState<number | null>(null);
   const [errorMessage, setErrorMessage] = useState('');
+  const [imageBillingModalPrompt, setImageBillingModalPrompt] = useState<{ imagePrompt: string; videoPrompt?: string } | null>(null);
+
+  // Panggilan terpusat: kalau error generate gambar disebabkan billing belum aktif,
+  // tampilkan modal khusus (bukan cuma teks error merah biasa) berisi penjelasan + prompt yang bisa disalin.
+  const handleImageGenError = (err: any, fallbackMessage: string, videoPromptText?: string) => {
+    if (err instanceof ImageBillingRequiredError) {
+      setImageBillingModalPrompt({ imagePrompt: err.promptText || '', videoPrompt: videoPromptText });
+    } else {
+      setErrorMessage(err?.message || fallbackMessage);
+    }
+  };
 
   const [completedProjectsCount, setCompletedProjectsCount] = useState(() => {
     return parseInt(localStorage.getItem('andriage_completed_projects') || '0');
@@ -2484,7 +2664,7 @@ Kembalikan data dalam format JSON yang valid:
         throw new Error("Gagal memperoleh data gambar dari model Google Flow.");
       }
     } catch (err: any) {
-      setErrorMessage(`Gagal meng-generate gambar adegan ${globalIndex}: ${err.message}`);
+      handleImageGenError(err, `Gagal meng-generate gambar adegan ${globalIndex}.`, scene.videoPrompt);
       setFailedSceneIndices(prev => Array.from(new Set([...prev, globalIndex])));
     } finally {
       setImageLoadingStates(prev => ({ ...prev, [globalIndex]: false }));
@@ -2561,6 +2741,14 @@ Kembalikan data dalam format JSON yang valid:
           throw new Error("Gagal memperoleh data gambar.");
         }
       } catch (err) {
+        if (err instanceof ImageBillingRequiredError) {
+          console.error(`Retry failed for scene ${globalIdx}:`, err);
+          setFailedSceneIndices(prev => Array.from(new Set([...prev, globalIdx])));
+          setImageLoadingStates(prev => ({ ...prev, [globalIdx]: false }));
+          setImageBillingModalPrompt({ imagePrompt: err.promptText || '', videoPrompt: scene.videoPrompt });
+          setProcessingState(prev => ({ ...prev, active: false }));
+          return; // Hentikan batch — scene lain yang butuh wajah pasti akan gagal karena sebab yang sama.
+        }
         console.error(`Retry failed for scene ${globalIdx}:`, err);
         setFailedSceneIndices(prev => Array.from(new Set([...prev, globalIdx])));
       } finally {
@@ -2881,6 +3069,17 @@ Kembalikan data dalam format JSON yang valid:
                 ));
               }
             } catch (vErr) {
+              if (vErr instanceof ImageBillingRequiredError) {
+                console.error(`Failed to render variant ${v.id}:`, vErr);
+                setThumbnailVariants(prev => prev.map(variant =>
+                  variant.id === v.id ? { ...variant, isLoading: false } : variant
+                ));
+                // Tandai sisa varian yang belum dicoba sebagai selesai-loading juga, supaya tidak nyangkut spinner selamanya.
+                setThumbnailVariants(prev => prev.map(variant => ({ ...variant, isLoading: false })));
+                setImageBillingModalPrompt({ imagePrompt: vErr.promptText || '' });
+                setProcessingState(prev => ({ ...prev, active: false }));
+                return; // Hentikan loop — varian lain yang butuh wajah pasti gagal karena sebab yang sama.
+              }
               console.error(`Failed to render variant ${v.id}:`, vErr);
               setThumbnailVariants(prev => prev.map(variant => 
                 variant.id === v.id ? { ...variant, isLoading: false } : variant
@@ -2961,7 +3160,7 @@ CRITICAL REQUIREMENT: You MUST overlay the following text in massive, bold, high
         throw new Error("Model AI gagal merender penggabungan gambar.");
       }
     } catch (err: any) {
-      setErrorMessage(`Gagal merender AI Fusion: ${err.message}`);
+      handleImageGenError(err, 'Gagal merender AI Fusion.');
     } finally {
       setProcessingState(prev => ({ ...prev, active: false }));
     }
@@ -3006,7 +3205,7 @@ CRITICAL REQUIREMENT: You MUST overlay the following text in massive, bold, high
         ));
       }
     } catch (err: any) {
-      setErrorMessage(`Gagal re-render ${variant.title}: ${err.message}`);
+      handleImageGenError(err, `Gagal re-render ${variant.title}.`);
     } finally {
       setThumbnailVariants(prev => prev.map(v => v.id === variantId ? { ...v, isLoading: false } : v));
       setProcessingState(prev => ({ ...prev, active: false }));
@@ -3542,7 +3741,7 @@ Kembalikan dalam format JSON yang valid:
                 <div className={`p-6 rounded-2xl border ${
                   darkMode ? 'bg-zinc-900/50 border-zinc-800' : 'bg-white border-slate-300 shadow-md'
                 }`}>
-                  <h3 className="text-base font-bold flex items-center gap-2 text-indigo-500">
+                  <h3 className="text-base font-bold flex items-center gap-2 text-red-500">
                     <Flame className="h-4 w-4 text-orange-500 animate-pulse" /> 
                     Step 1: Topic Discovery & Search Grounding
                   </h3>
@@ -3560,7 +3759,7 @@ Kembalikan dalam format JSON yang valid:
                           onClick={() => { setVideoType('long'); setDuration('12'); }}
                           className={`py-2 px-3 text-xs font-bold rounded-lg border transition-all ${
                             videoType === 'long' 
-                              ? 'bg-indigo-600 text-white border-transparent shadow' 
+                              ? 'bg-red-600 text-white border-transparent shadow' 
                               : (darkMode ? 'bg-zinc-950 border-zinc-800 text-zinc-400' : 'bg-white border-slate-300 text-slate-900')
                           }`}
                         >
@@ -3570,7 +3769,7 @@ Kembalikan dalam format JSON yang valid:
                           onClick={() => { setVideoType('shorts'); setDuration('60'); }}
                           className={`py-2 px-3 text-xs font-bold rounded-lg border transition-all ${
                             videoType === 'shorts' 
-                              ? 'bg-indigo-600 text-white border-transparent shadow' 
+                              ? 'bg-red-600 text-white border-transparent shadow' 
                               : (darkMode ? 'bg-zinc-950 border-zinc-800 text-zinc-400' : 'bg-white border-slate-300 text-slate-900')
                           }`}
                         >
@@ -3645,7 +3844,7 @@ Kembalikan dalam format JSON yang valid:
                           onClick={handleDiscoverTopics}
                           disabled={processingState.active}
                           className={`py-2 px-3 text-xs font-bold rounded-lg transition-all flex items-center gap-1.5 shrink-0 disabled:opacity-50 disabled:cursor-not-allowed ${
-                            darkMode ? 'bg-indigo-600 hover:bg-indigo-700 text-white' : 'bg-slate-900 hover:bg-slate-955 text-white'
+                            darkMode ? 'bg-red-600 hover:bg-red-700 text-white' : 'bg-slate-900 hover:bg-slate-955 text-white'
                           }`}
                         >
                           <span>🔍</span>
@@ -3661,7 +3860,7 @@ Kembalikan dalam format JSON yang valid:
                   darkMode ? 'bg-zinc-900/50 border-zinc-800' : 'bg-white border-slate-300 shadow-md'
                 }`}>
                   <h4 className={`text-sm font-bold flex items-center gap-2 mb-2 ${darkMode ? 'text-zinc-200' : 'text-slate-900'}`}>
-                    <FileText className="h-4 w-4 text-indigo-500" />
+                    <FileText className="h-4 w-4 text-red-500" />
                     Atau Masukkan Skrip Secara Manual (Lewati Riset Topik)
                   </h4>
                   <p className={`text-xs mb-3 ${darkMode ? 'text-zinc-400' : 'text-slate-800 font-medium'}`}>
@@ -3710,7 +3909,7 @@ Kembalikan dalam format JSON yang valid:
                       <h4 className={`text-xs font-bold uppercase tracking-wider ${darkMode ? 'text-zinc-400' : 'text-slate-900'}`}>
                         10 Ide Topik Sangat Relevan:
                       </h4>
-                      <span className="text-xs bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 px-2.5 py-0.5 rounded-md font-semibold">
+                      <span className="text-xs bg-red-500/10 text-red-400 border border-red-500/20 px-2.5 py-0.5 rounded-md font-semibold">
                         {selectedTopics.length} Topik Terpilih
                       </span>
                     </div>
@@ -3724,13 +3923,13 @@ Kembalikan dalam format JSON yang valid:
                             onClick={() => handleToggleTopic(t)}
                             className={`p-5 rounded-xl border cursor-pointer transition-all flex flex-col justify-between ${
                               isAlreadySelected 
-                                ? 'bg-indigo-500/5 border-indigo-500 shadow-md ring-2 ring-indigo-500/50' 
+                                ? 'bg-red-500/5 border-red-500 shadow-md ring-2 ring-red-500/50' 
                                 : (darkMode ? 'bg-zinc-900 border-zinc-800' : 'bg-white border-slate-300')
                             }`}
                           >
                             <div>
                               <div className="flex items-center justify-between gap-2 mb-2">
-                                <span className="text-[10px] font-extrabold px-2 py-0.5 rounded bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">
+                                <span className="text-[10px] font-extrabold px-2 py-0.5 rounded bg-red-500/10 text-red-400 border border-red-500/20">
                                   Topik {t.id}
                                 </span>
                                 <span className="text-[10px] bg-emerald-500/10 text-emerald-400 px-2 py-0.5 rounded font-bold">CTR: {t.ctrEstimate || "9.4%"}</span>
@@ -3745,8 +3944,8 @@ Kembalikan dalam format JSON yang valid:
                             </div>
 
                             <div className={`flex justify-between items-center mt-4 pt-3 border-t ${darkMode ? 'border-zinc-800/40' : 'border-slate-200'}`}>
-                              <span className="text-xs font-bold text-indigo-400">Viral Score: {t.viralScore}%</span>
-                              <span className="text-xs font-bold text-indigo-500">
+                              <span className="text-xs font-bold text-red-400">Viral Score: {t.viralScore}%</span>
+                              <span className="text-xs font-bold text-red-500">
                                 {isAlreadySelected ? '✓ Terpilih' : 'Pilih Ide Ini'}
                               </span>
                             </div>
@@ -3767,7 +3966,7 @@ Kembalikan dalam format JSON yang valid:
                       setActiveStep(2);
                     }}
                     className={`px-5 py-2.5 rounded-lg font-bold text-xs transition-all flex items-center gap-2 ${
-                      darkMode ? 'bg-indigo-600 hover:bg-indigo-700 text-white' : 'bg-slate-900 text-white'
+                      darkMode ? 'bg-red-600 hover:bg-red-700 text-white' : 'bg-slate-900 text-white'
                     }`}
                   >
                     Lanjut ke Edit Skrip & Narasi
@@ -3783,8 +3982,8 @@ Kembalikan dalam format JSON yang valid:
                 <div className={`p-6 rounded-2xl border ${
                   darkMode ? 'bg-zinc-900/50 border-zinc-800' : 'bg-white border-slate-300 shadow-md'
                 }`}>
-                  <h3 className="text-base font-bold flex items-center gap-2 text-indigo-500">
-                    <BookOpen className="h-4 w-4 text-indigo-500" />
+                  <h3 className="text-base font-bold flex items-center gap-2 text-red-500">
+                    <BookOpen className="h-4 w-4 text-red-500" />
                     Step 2: Script Synthesis & 6-Tier Character Reference System
                   </h3>
                   <p className={`text-xs mt-1 ${darkMode ? 'text-zinc-400' : 'text-slate-800 font-semibold'}`}>
@@ -3802,7 +4001,7 @@ Kembalikan dalam format JSON yang valid:
                           onClick={() => setLanguage('id')}
                           className={`py-2 px-3 text-xs font-bold rounded-lg border transition-all ${
                             language === 'id' 
-                              ? 'bg-indigo-600 text-white border-transparent shadow' 
+                              ? 'bg-red-600 text-white border-transparent shadow' 
                               : (darkMode ? 'bg-zinc-950 border-zinc-800 text-zinc-400' : 'bg-white border-slate-300 text-slate-900')
                           }`}
                         >
@@ -3813,7 +4012,7 @@ Kembalikan dalam format JSON yang valid:
                           onClick={() => setLanguage('en')}
                           className={`py-2 px-3 text-xs font-bold rounded-lg border transition-all ${
                             language === 'en' 
-                              ? 'bg-indigo-600 text-white border-transparent shadow' 
+                              ? 'bg-red-600 text-white border-transparent shadow' 
                               : (darkMode ? 'bg-zinc-950 border-zinc-800 text-zinc-400' : 'bg-white border-slate-300 text-slate-900')
                           }`}
                         >
@@ -3830,7 +4029,7 @@ Kembalikan dalam format JSON yang valid:
                         value={narrationStyle} 
                         onChange={(e) => setNarrationStyle(e.target.value)}
                         className={`w-full py-2 px-3 text-xs font-bold rounded-lg border outline-none ${
-                          darkMode ? 'bg-zinc-950 border-zinc-800 text-zinc-100 focus:border-indigo-500' : 'bg-white border-slate-300 text-slate-900'
+                          darkMode ? 'bg-zinc-950 border-zinc-800 text-zinc-100 focus:border-red-500' : 'bg-white border-slate-300 text-slate-900'
                         }`}
                       >
                         <option value="storytelling">📖 Storytelling (Alur Narasi Mengalir, Epik & Mendalam)</option>
@@ -3842,7 +4041,7 @@ Kembalikan dalam format JSON yang valid:
                   </div>
 
                   <div className="mt-6 space-y-3">
-                    <h4 className={`text-xs font-extrabold uppercase tracking-wider flex items-center gap-2 ${darkMode ? 'text-indigo-400' : 'text-indigo-700'}`}>
+                    <h4 className={`text-xs font-extrabold uppercase tracking-wider flex items-center gap-2 ${darkMode ? 'text-red-400' : 'text-red-700'}`}>
                       <span>🖼️</span> Hierarki 6 Slot Referensi Wajah Karakter
                     </h4>
 
@@ -3859,7 +4058,7 @@ Kembalikan dalam format JSON yang valid:
                               slot.role === 'main'
                                 ? 'bg-amber-500/5 border-amber-500/30'
                                 : slot.role === 'supporting'
-                                  ? 'bg-indigo-500/5 border-indigo-500/30'
+                                  ? 'bg-red-500/5 border-red-500/30'
                                   : 'bg-purple-500/5 border-purple-500/30'
                             }`}
                           >
@@ -3869,7 +4068,7 @@ Kembalikan dalam format JSON yang valid:
                                   slot.role === 'main'
                                     ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
                                     : slot.role === 'supporting'
-                                      ? 'bg-indigo-500/20 text-indigo-300 border border-indigo-500/40'
+                                      ? 'bg-red-500/20 text-red-300 border border-red-500/40'
                                       : 'bg-purple-500/20 text-purple-300 border border-purple-500/40'
                                 }`}>
                                   {slot.label}
@@ -3890,7 +4089,7 @@ Kembalikan dalam format JSON yang valid:
                                 </div>
                               ) : (
                                 <div className={`relative border-2 border-dashed rounded-lg p-3 text-center my-2 cursor-pointer transition-colors ${
-                                  darkMode ? 'bg-zinc-950/40 border-zinc-800 hover:border-indigo-500' : 'bg-slate-50 border-slate-300 hover:border-indigo-600'
+                                  darkMode ? 'bg-zinc-950/40 border-zinc-800 hover:border-red-500' : 'bg-slate-50 border-slate-300 hover:border-red-600'
                                 }`}>
                                   <input 
                                     type="file" 
@@ -3898,7 +4097,7 @@ Kembalikan dalam format JSON yang valid:
                                     onChange={(e) => handleSlotPhotoUpload(e, slot.slotIndex)} 
                                     className="absolute inset-0 opacity-0 cursor-pointer" 
                                   />
-                                  <Upload className="h-5 w-5 text-indigo-400 mx-auto mb-1" />
+                                  <Upload className="h-5 w-5 text-red-400 mx-auto mb-1" />
                                   <span className="text-[10px] font-bold text-zinc-400 block">
                                     Unggah Foto Wajah
                                   </span>
@@ -3914,7 +4113,7 @@ Kembalikan dalam format JSON yang valid:
                                   onClick={() => handleSlotGenderToggle(slot.slotIndex, 'male')}
                                   className={`px-2 py-0.5 rounded text-[10px] font-bold transition-all ${
                                     currentGender === 'male'
-                                      ? 'bg-indigo-600 text-white'
+                                      ? 'bg-red-600 text-white'
                                       : 'bg-zinc-800 text-zinc-400 hover:text-zinc-200'
                                   }`}
                                 >
@@ -3925,7 +4124,7 @@ Kembalikan dalam format JSON yang valid:
                                   onClick={() => handleSlotGenderToggle(slot.slotIndex, 'female')}
                                   className={`px-2 py-0.5 rounded text-[10px] font-bold transition-all ${
                                     currentGender === 'female'
-                                      ? 'bg-indigo-600 text-white'
+                                      ? 'bg-red-600 text-white'
                                       : 'bg-zinc-800 text-zinc-400 hover:text-zinc-200'
                                   }`}
                                 >
@@ -3943,7 +4142,7 @@ Kembalikan dalam format JSON yang valid:
                     <button
                       onClick={handleGenerateScript}
                       className={`py-2.5 px-6 text-xs font-bold rounded-lg transition-all flex items-center gap-2 ${
-                        darkMode ? 'bg-indigo-600 hover:bg-indigo-700 text-white' : 'bg-slate-900 text-white'
+                        darkMode ? 'bg-red-600 hover:bg-red-700 text-white' : 'bg-slate-900 text-white'
                       }`}
                     >
                       <span>📜</span>
@@ -3957,12 +4156,12 @@ Kembalikan dalam format JSON yang valid:
                   <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
                     <div className={`xl:col-span-2 p-6 rounded-2xl border ${darkMode ? 'bg-zinc-900/50 border-zinc-800' : 'bg-white border-slate-300'}`}>
                       <div className="flex justify-between items-center mb-4 pb-2 border-b border-zinc-800/40">
-                        <h4 className="font-bold text-xs uppercase tracking-wider text-indigo-400 flex items-center gap-1.5">
+                        <h4 className="font-bold text-xs uppercase tracking-wider text-red-400 flex items-center gap-1.5">
                           <FileText className="h-4 w-4" /> Naskah Skrip Narasi Final
                         </h4>
                         <button
                           onClick={() => handleCopyText(generatedScript, 'script')}
-                          className="text-xs text-indigo-400 hover:underline font-bold flex items-center gap-1"
+                          className="text-xs text-red-400 hover:underline font-bold flex items-center gap-1"
                         >
                           <span>📋</span> {copiedStates['script'] ? 'Disalin!' : 'Salin Skrip'}
                         </button>
@@ -3974,7 +4173,7 @@ Kembalikan dalam format JSON yang valid:
                             darkMode ? 'bg-zinc-950/40 border-zinc-800' : 'bg-slate-50 border-slate-200'
                           }`}>
                             <div className="flex items-center justify-between">
-                              <strong className="text-[10px] text-indigo-400 uppercase tracking-widest">
+                              <strong className="text-[10px] text-red-400 uppercase tracking-widest">
                                 PARAGRAF {idx + 1}
                               </strong>
                               <div className="flex items-center gap-1.5">
@@ -4012,7 +4211,7 @@ Kembalikan dalam format JSON yang valid:
                     </div>
 
                     <div className={`p-6 rounded-2xl border ${darkMode ? 'bg-zinc-900/50 border-zinc-800' : 'bg-white border-slate-300'}`}>
-                      <h4 className="font-bold text-xs uppercase tracking-wider text-indigo-400 flex items-center gap-1.5 mb-4 pb-2 border-b border-zinc-800/40">
+                      <h4 className="font-bold text-xs uppercase tracking-wider text-red-400 flex items-center gap-1.5 mb-4 pb-2 border-b border-zinc-800/40">
                         <Volume2 className="h-4 w-4" /> Studio Pengisi Suara AI (Gemini TTS)
                       </h4>
 
@@ -4053,7 +4252,7 @@ Kembalikan dalam format JSON yang valid:
                                 onClick={() => setSelectedTone(tone.id)}
                                 className={`py-1.5 px-2 rounded-lg text-[10px] font-bold border transition-all flex items-center justify-center gap-1 ${
                                   selectedTone === tone.id 
-                                    ? 'bg-indigo-600 text-white border-indigo-500 shadow-sm' 
+                                    ? 'bg-red-600 text-white border-red-500 shadow-sm' 
                                     : (darkMode ? 'bg-zinc-950 border-zinc-800 text-zinc-400 hover:text-zinc-200' : 'bg-white border-slate-300 text-slate-900')
                                 }`}
                               >
@@ -4083,7 +4282,7 @@ Kembalikan dalam format JSON yang valid:
                           type="button"
                           onClick={handleGenerateVoiceOver}
                           disabled={!ttsText.trim()}
-                          className="w-full py-2 disabled:opacity-40 text-white text-xs font-bold rounded-lg bg-indigo-600 hover:bg-indigo-700 transition-all flex items-center justify-center gap-1.5 shadow"
+                          className="w-full py-2 disabled:opacity-40 text-white text-xs font-bold rounded-lg bg-red-600 hover:bg-red-700 transition-all flex items-center justify-center gap-1.5 shadow"
                         >
                           <span>🎙️</span>
                           Sintesis Audio Narator
@@ -4131,7 +4330,7 @@ Kembalikan dalam format JSON yang valid:
                       }
                     }}
                     className={`px-5 py-2.5 rounded-lg font-bold text-xs transition-all flex items-center gap-2 ${
-                      darkMode ? 'bg-indigo-600 hover:bg-indigo-700 text-white' : 'bg-slate-900 text-white'
+                      darkMode ? 'bg-red-600 hover:bg-red-700 text-white' : 'bg-slate-900 text-white'
                     }`}
                   >
                     Lanjut ke Storyboard Visual
@@ -4149,7 +4348,7 @@ Kembalikan dalam format JSON yang valid:
                 }`}>
                   <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 mb-4">
                     <div>
-                      <h4 className="text-xs font-black uppercase tracking-wider text-indigo-400 flex items-center gap-2">
+                      <h4 className="text-xs font-black uppercase tracking-wider text-red-400 flex items-center gap-2">
                         <span>🎨</span> Visual Style Switcher & Aspect Ratio
                       </h4>
                       <p className={`text-[11px] mt-0.5 ${darkMode ? 'text-zinc-400' : 'text-slate-600 font-medium'}`}>
@@ -4165,7 +4364,7 @@ Kembalikan dalam format JSON yang valid:
                         onClick={() => setGlobalAspectRatio('16:9')}
                         className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 ${
                           globalAspectRatio === '16:9'
-                            ? 'bg-indigo-600 text-white shadow-md'
+                            ? 'bg-red-600 text-white shadow-md'
                             : 'text-zinc-400 hover:text-zinc-200'
                         }`}
                       >
@@ -4175,7 +4374,7 @@ Kembalikan dalam format JSON yang valid:
                         onClick={() => setGlobalAspectRatio('9:16')}
                         className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 ${
                           globalAspectRatio === '9:16'
-                            ? 'bg-indigo-600 text-white shadow-md'
+                            ? 'bg-red-600 text-white shadow-md'
                             : 'text-zinc-400 hover:text-zinc-200'
                         }`}
                       >
@@ -4193,7 +4392,7 @@ Kembalikan dalam format JSON yang valid:
                           onClick={() => setSelectedVisualStyle(preset.id)}
                           className={`p-3 rounded-xl border text-left transition-all flex flex-col justify-between ${
                             isSelected
-                              ? 'bg-indigo-600/10 border-indigo-500 ring-2 ring-indigo-500/40 shadow-md'
+                              ? 'bg-red-600/10 border-red-500 ring-2 ring-red-500/40 shadow-md'
                               : (darkMode ? 'bg-zinc-950/60 border-zinc-800 hover:border-zinc-700' : 'bg-slate-50 border-slate-200 hover:border-slate-300')
                           }`}
                         >
@@ -4201,13 +4400,13 @@ Kembalikan dalam format JSON yang valid:
                             <div className="flex items-center justify-between mb-1">
                               <span className="text-base">{preset.icon}</span>
                               <span className={`text-[8px] font-extrabold px-1.5 py-0.5 rounded uppercase ${
-                                isSelected ? 'bg-indigo-600 text-white' : 'bg-zinc-800 text-zinc-400'
+                                isSelected ? 'bg-red-600 text-white' : 'bg-zinc-800 text-zinc-400'
                               }`}>
                                 {preset.badge}
                               </span>
                             </div>
                             <h5 className={`text-xs font-bold leading-snug ${
-                              isSelected ? 'text-indigo-400 font-black' : (darkMode ? 'text-zinc-200' : 'text-slate-900')
+                              isSelected ? 'text-red-400 font-black' : (darkMode ? 'text-zinc-200' : 'text-slate-900')
                             }`}>
                               {preset.label}
                             </h5>
@@ -4221,8 +4420,8 @@ Kembalikan dalam format JSON yang valid:
                 <div className={`p-6 rounded-2xl border ${darkMode ? 'bg-zinc-900/50 border-zinc-800' : 'bg-white border-slate-300'}`}>
                   <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
                     <div>
-                      <h3 className="text-base font-bold flex items-center gap-2 text-indigo-500">
-                        <Sparkles className="h-4 w-4 text-indigo-500 animate-spin" />
+                      <h3 className="text-base font-bold flex items-center gap-2 text-red-500">
+                        <Sparkles className="h-4 w-4 text-red-500 animate-spin" />
                         Step 3: Visual Scene & Storyboard Creation
                       </h3>
                       <p className={`text-xs mt-1 ${darkMode ? 'text-zinc-400' : 'text-slate-800 font-semibold'}`}>
@@ -4262,7 +4461,7 @@ Kembalikan dalam format JSON yang valid:
                               <span className="text-[10px] text-zinc-400 uppercase tracking-wider block font-extrabold mb-1">
                                 🎬 Total Scene Global
                               </span>
-                              <strong className="text-sm font-black text-indigo-400">
+                              <strong className="text-sm font-black text-red-400">
                                 {totalGlobalScenes} Scene
                               </strong>
                             </div>
@@ -4312,7 +4511,7 @@ Kembalikan dalam format JSON yang valid:
                         darkMode ? 'bg-zinc-900/40 border-zinc-800' : 'bg-white border-slate-300 shadow-sm'
                       }`}>
                         <div className="space-y-1">
-                          <h4 className={`text-xs font-extrabold uppercase tracking-wider flex items-center gap-2 ${darkMode ? 'text-indigo-400' : 'text-indigo-700'}`}>
+                          <h4 className={`text-xs font-extrabold uppercase tracking-wider flex items-center gap-2 ${darkMode ? 'text-red-400' : 'text-red-700'}`}>
                             <Sparkles className="h-4 w-4 text-amber-400 animate-pulse" />
                             Master Batch Controller
                           </h4>
@@ -4324,7 +4523,7 @@ Kembalikan dalam format JSON yang valid:
                         <div className="flex flex-wrap gap-2.5 w-full md:w-auto shrink-0">
                           <button
                             onClick={handleGenerateAllImagesForAllParagraphs}
-                            className="flex-1 md:flex-initial py-2.5 px-4 rounded-xl text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 transition-all flex items-center justify-center gap-2 shadow"
+                            className="flex-1 md:flex-initial py-2.5 px-4 rounded-xl text-xs font-bold text-white bg-red-600 hover:bg-red-700 transition-all flex items-center justify-center gap-2 shadow"
                           >
                             <span>🎨</span>
                             <Sparkles className="h-4 w-4" />
@@ -4389,7 +4588,7 @@ Kembalikan dalam format JSON yang valid:
                             }`}
                           >
                             <div className="flex items-center gap-3">
-                              <span className="h-5 w-5 rounded-full bg-indigo-500/10 text-indigo-500 flex items-center justify-center text-[10px] font-black border border-indigo-500/20">
+                              <span className="h-5 w-5 rounded-full bg-red-500/10 text-red-500 flex items-center justify-center text-[10px] font-black border border-red-500/20">
                                 {paragraphNum}
                               </span>
                               <div>
@@ -4399,7 +4598,7 @@ Kembalikan dalam format JSON yang valid:
                             </div>
 
                             <div className="flex items-center gap-2 shrink-0 flex-wrap justify-end">
-                              <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">
+                              <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-red-500/10 text-red-400 border border-red-500/20">
                                 🎬 {totalParaScenes} Scene
                               </span>
                               <span className={`text-[10px] font-bold px-2 py-0.5 rounded border ${
@@ -4429,10 +4628,10 @@ Kembalikan dalam format JSON yang valid:
                             <div className="p-4 border-t space-y-4">
                               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-zinc-800/40">
                                 <div className="flex items-center gap-2 text-[11px] font-bold text-zinc-300 flex-wrap">
-                                  <span className="text-indigo-400 uppercase tracking-wider text-[10px] bg-indigo-500/10 px-2 py-0.5 rounded border border-indigo-500/20">
+                                  <span className="text-red-400 uppercase tracking-wider text-[10px] bg-red-500/10 px-2 py-0.5 rounded border border-red-500/20">
                                     Rincian Paragraf {paragraphNum}
                                   </span>
-                                  <span className="text-zinc-400">• Total: <strong className="text-indigo-400">{totalParaScenes} Scene</strong></span>
+                                  <span className="text-zinc-400">• Total: <strong className="text-red-400">{totalParaScenes} Scene</strong></span>
                                   <span className="text-zinc-400">• Prompt: <strong className="text-emerald-400">{paraPromptsDone} Dibuat</strong> / <strong className="text-amber-400">{paraPromptsPending} Belum</strong></span>
                                   <span className="text-zinc-400">• Render: <strong className="text-emerald-400">{paraImagesDone} Selesai</strong> / <strong className="text-amber-400">{paraImagesPending} Belum</strong></span>
                                   {paraFailedCount > 0 && <span className="text-rose-400 font-extrabold">• ({paraFailedCount} Gagal)</span>}
@@ -4441,7 +4640,7 @@ Kembalikan dalam format JSON yang valid:
                                 <div className="flex items-center gap-2 shrink-0">
                                   <button
                                     onClick={() => handleGenerateAllPromptsForParagraph(paragraphNum)}
-                                    className="py-1 px-2.5 rounded bg-indigo-600/90 text-white text-[10px] font-bold flex items-center gap-1 hover:bg-indigo-700 transition-colors"
+                                    className="py-1 px-2.5 rounded bg-red-600/90 text-white text-[10px] font-bold flex items-center gap-1 hover:bg-red-700 transition-colors"
                                   >
                                     <span>🎞️</span> Generate Prompts Paragraf {paragraphNum}
                                   </button>
@@ -4474,11 +4673,11 @@ Kembalikan dalam format JSON yang valid:
                                     <div className="flex-1 space-y-3">
                                       <div className="flex items-center justify-between gap-2 flex-wrap">
                                         <div className="flex items-center gap-2">
-                                          <span className="text-[10px] font-extrabold px-2 py-0.5 bg-indigo-500/10 text-indigo-500 border border-indigo-500/20 rounded">
+                                          <span className="text-[10px] font-extrabold px-2 py-0.5 bg-red-500/10 text-red-500 border border-red-500/20 rounded">
                                             Adegan {scene.sceneIndexInParagraph}
                                           </span>
                                           <span className={`text-[10px] flex items-center gap-1 font-semibold ${darkMode ? 'text-zinc-400' : 'text-slate-900'}`}>
-                                            <Clock className="h-3 w-3 text-indigo-500 animate-pulse" />
+                                            <Clock className="h-3 w-3 text-red-500 animate-pulse" />
                                             {scene.startTimeCode} - {scene.endTimeCode} ({scene.duration}s)
                                           </span>
                                           {hasFailed && (
@@ -4489,7 +4688,7 @@ Kembalikan dalam format JSON yang valid:
                                         </div>
                                       </div>
 
-                                      <blockquote className={`text-xs italic pl-3 border-l-2 border-indigo-500 leading-relaxed ${darkMode ? 'text-zinc-300' : 'text-slate-900 font-bold'}`}>
+                                      <blockquote className={`text-xs italic pl-3 border-l-2 border-red-500 leading-relaxed ${darkMode ? 'text-zinc-300' : 'text-slate-900 font-bold'}`}>
                                         "{scene.sentence}"
                                       </blockquote>
 
@@ -4499,7 +4698,7 @@ Kembalikan dalam format JSON yang valid:
                                             <button
                                               onClick={() => setActivePromptTab(prev => ({ ...prev, [globalIdx]: 'visual' }))}
                                               className={`px-2.5 py-1 rounded text-[10px] font-bold transition-all ${
-                                                activeTab === 'visual' ? 'bg-indigo-600 text-white' : 'text-zinc-400 hover:text-zinc-200'
+                                                activeTab === 'visual' ? 'bg-red-600 text-white' : 'text-zinc-400 hover:text-zinc-200'
                                               }`}
                                             >
                                               🖼️ Prompt Visual (Gambar)
@@ -4517,7 +4716,7 @@ Kembalikan dalam format JSON yang valid:
                                           {activeTab === 'visual' && scene.visualPrompt && (
                                             <button 
                                               onClick={() => handleCopyText(scene.visualPrompt, `copy-scene-${globalIdx}`)}
-                                              className="text-[10px] text-indigo-400 hover:underline flex items-center gap-1 font-bold"
+                                              className="text-[10px] text-red-400 hover:underline flex items-center gap-1 font-bold"
                                             >
                                               <span>📋</span> {copiedStates[`copy-scene-${globalIdx}`] ? 'Disalin!' : 'Salin Prompt'}
                                             </button>
@@ -4535,7 +4734,7 @@ Kembalikan dalam format JSON yang valid:
 
                                         {activeTab === 'visual' ? (
                                           scene.visualPrompt ? (
-                                            <p className="text-[11px] font-mono leading-relaxed text-indigo-300">
+                                            <p className="text-[11px] font-mono leading-relaxed text-red-300">
                                               {scene.visualPrompt}
                                             </p>
                                           ) : (
@@ -4571,7 +4770,7 @@ Kembalikan dalam format JSON yang valid:
                                                 key={r}
                                                 onClick={() => setSceneRatios(prev => ({ ...prev, [globalIdx]: r }))}
                                                 className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
-                                                  ratio === r ? 'bg-indigo-600 text-white' : 'text-zinc-400'
+                                                  ratio === r ? 'bg-red-600 text-white' : 'text-zinc-400'
                                                 }`}
                                               >
                                                 {r}
@@ -4586,7 +4785,7 @@ Kembalikan dalam format JSON yang valid:
                                           className="w-full py-1.5 border font-bold rounded flex items-center justify-center gap-1.5 transition-all text-[11px] bg-zinc-950 border-zinc-800 text-zinc-200 hover:bg-zinc-900"
                                         >
                                           <span>🎞️</span>
-                                          {scene.loading ? <RefreshCw className="h-3 w-3 animate-spin text-indigo-500" /> : <Wand2 className="h-3 w-3 text-indigo-500" />}
+                                          {scene.loading ? <RefreshCw className="h-3 w-3 animate-spin text-red-500" /> : <Wand2 className="h-3 w-3 text-red-500" />}
                                           {scene.visualPrompt ? 'Perbarui Prompt' : 'Generate Prompt'}
                                         </button>
 
@@ -4596,7 +4795,7 @@ Kembalikan dalam format JSON yang valid:
                                               onClick={() => handleGenerateImageForScene(globalIdx)}
                                               disabled={isImgLoading}
                                               className={`w-full py-1.5 disabled:opacity-50 text-white font-bold rounded flex items-center justify-center gap-1.5 transition-all text-[11px] ${
-                                                hasFailed ? 'bg-amber-600 hover:bg-amber-700' : 'bg-indigo-600 hover:bg-indigo-700'
+                                                hasFailed ? 'bg-amber-600 hover:bg-amber-700' : 'bg-red-600 hover:bg-red-700'
                                               }`}
                                             >
                                               <span>{hasFailed ? '🔄' : '🎨'}</span>
@@ -4609,7 +4808,7 @@ Kembalikan dalam format JSON yang valid:
                                             } bg-zinc-950 border-zinc-800`}>
                                               {isImgLoading ? (
                                                 <div className="absolute inset-0 flex flex-col items-center justify-center bg-zinc-950">
-                                                  <div className="w-6 h-6 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin mb-1"></div>
+                                                  <div className="w-6 h-6 border-2 border-red-500 border-t-transparent rounded-full animate-spin mb-1"></div>
                                                   <span className="text-[10px] text-zinc-500 font-medium">Nano Banana 2 Rendering...</span>
                                                 </div>
                                               ) : imgUrl ? (
@@ -4676,7 +4875,7 @@ Kembalikan dalam format JSON yang valid:
                       setActiveStep(4);
                     }}
                     className={`px-5 py-2.5 rounded-lg font-bold text-xs transition-all flex items-center gap-2 ${
-                      darkMode ? 'bg-indigo-600 hover:bg-indigo-700 text-white' : 'bg-slate-900 text-white'
+                      darkMode ? 'bg-red-600 hover:bg-red-700 text-white' : 'bg-slate-900 text-white'
                     }`}
                   >
                     Lanjut ke Desain Thumbnail
@@ -4694,8 +4893,8 @@ Kembalikan dalam format JSON yang valid:
                 }`}>
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                     <div>
-                      <h3 className="text-base font-bold flex items-center gap-2 text-indigo-500">
-                        <Eye className="h-4 w-4 text-indigo-500 animate-pulse" />
+                      <h3 className="text-base font-bold flex items-center gap-2 text-red-500">
+                        <Eye className="h-4 w-4 text-red-500 animate-pulse" />
                         Step 4: High CTR Thumbnail Blueprint & AI Fusion Studio
                       </h3>
                       <p className={`text-xs mt-1 ${darkMode ? 'text-zinc-400' : 'text-slate-800 font-semibold'}`}>
@@ -4707,7 +4906,7 @@ Kembalikan dalam format JSON yang valid:
                       <button
                         onClick={() => setThumbnailModeTab('auto')}
                         className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
-                          thumbnailModeTab === 'auto' ? 'bg-indigo-600 text-white shadow' : 'text-zinc-400 hover:text-zinc-200'
+                          thumbnailModeTab === 'auto' ? 'bg-red-600 text-white shadow' : 'text-zinc-400 hover:text-zinc-200'
                         }`}
                       >
                         🤖 3 Konsep Otomatis AI
@@ -4715,7 +4914,7 @@ Kembalikan dalam format JSON yang valid:
                       <button
                         onClick={() => setThumbnailModeTab('manual_fusion')}
                         className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
-                          thumbnailModeTab === 'manual_fusion' ? 'bg-indigo-600 text-white shadow' : 'text-zinc-400 hover:text-zinc-200'
+                          thumbnailModeTab === 'manual_fusion' ? 'bg-red-600 text-white shadow' : 'text-zinc-400 hover:text-zinc-200'
                         }`}
                       >
                         📤 AI Fusion (1-4 Foto)
@@ -4740,7 +4939,7 @@ Kembalikan dalam format JSON yang valid:
                           if (thumbnailModeTab === 'auto') handleGenerateThumbnailVariants();
                           else handleManualFusionThumbnail();
                         }}
-                        className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-bold transition-all shrink-0 flex items-center gap-1.5 shadow"
+                        className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg text-xs font-bold transition-all shrink-0 flex items-center gap-1.5 shadow"
                       >
                         <span>🔄</span> Render Ulang Thumbnail Dengan Teks Baru
                       </button>
@@ -4753,11 +4952,11 @@ Kembalikan dalam format JSON yang valid:
                   <div className={`p-6 rounded-2xl border space-y-4 ${
                     darkMode ? 'bg-zinc-900/50 border-zinc-800' : 'bg-white border-slate-300'
                   }`}>
-                    <h4 className="text-xs font-black uppercase tracking-wider text-indigo-400 flex items-center gap-2">
+                    <h4 className="text-xs font-black uppercase tracking-wider text-red-400 flex items-center gap-2">
                       <span>📤</span> Unggah 1-4 Foto Kustom Untuk AI Fusion
                     </h4>
 
-                    <div className="border-2 border-dashed border-zinc-800 rounded-xl p-5 text-center relative cursor-pointer hover:border-indigo-500 transition-colors">
+                    <div className="border-2 border-dashed border-zinc-800 rounded-xl p-5 text-center relative cursor-pointer hover:border-red-500 transition-colors">
                       <input 
                         type="file" 
                         multiple 
@@ -4781,7 +4980,7 @@ Kembalikan dalam format JSON yang valid:
                         }} 
                         className="absolute inset-0 opacity-0 cursor-pointer" 
                       />
-                      <Upload className="h-6 w-6 text-indigo-400 mx-auto mb-1" />
+                      <Upload className="h-6 w-6 text-red-400 mx-auto mb-1" />
                       <span className="text-xs font-bold text-zinc-300 block">Pilih 1 - 4 Foto Kustom</span>
                     </div>
 
@@ -4804,7 +5003,7 @@ Kembalikan dalam format JSON yang valid:
                     <button
                       onClick={handleManualFusionThumbnail}
                       disabled={uploadedThumbnailImages.length === 0}
-                      className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-extrabold rounded-xl disabled:opacity-40 shadow flex items-center justify-center gap-2"
+                      className="w-full py-2.5 bg-red-600 hover:bg-red-700 text-white text-xs font-extrabold rounded-xl disabled:opacity-40 shadow flex items-center justify-center gap-2"
                     >
                       <span>🎨</span> Fusion & Render 3 Konsep Gambar Manual
                     </button>
@@ -4815,7 +5014,7 @@ Kembalikan dalam format JSON yang valid:
                 {thumbnailVariants.length > 0 && (
                   <div className="space-y-4">
                     <div className="flex items-center justify-between px-1">
-                      <h4 className="text-xs font-black uppercase tracking-wider text-indigo-400 flex items-center gap-2">
+                      <h4 className="text-xs font-black uppercase tracking-wider text-red-400 flex items-center gap-2">
                         <Trophy className="h-4 w-4 text-amber-400" /> Hasil Evaluasi Varian Thumbnail (A/B/C Test Concepts)
                       </h4>
                       {selectedThumbnail && (
@@ -4832,20 +5031,20 @@ Kembalikan dalam format JSON yang valid:
                           ? 'text-emerald-400 bg-emerald-500/10 border-emerald-500/30' 
                           : v.ctrScore >= 70 
                             ? 'text-amber-400 bg-amber-500/10 border-amber-500/30' 
-                            : 'text-indigo-400 bg-indigo-500/10 border-indigo-500/30';
+                            : 'text-red-400 bg-red-500/10 border-red-500/30';
 
                         return (
                           <div 
                             key={v.id}
                             className={`p-5 rounded-2xl border transition-all flex flex-col justify-between ${
                               isSelected 
-                                ? 'bg-indigo-600/10 border-indigo-500 ring-2 ring-indigo-500/50 shadow-xl' 
+                                ? 'bg-red-600/10 border-red-500 ring-2 ring-red-500/50 shadow-xl' 
                                 : (darkMode ? 'bg-zinc-900/60 border-zinc-800 hover:border-zinc-700' : 'bg-white border-slate-300 shadow-md')
                             }`}
                           >
                             <div className="space-y-4">
                               <div className="flex items-center justify-between gap-2">
-                                <span className="text-[10px] font-black uppercase tracking-widest px-2.5 py-0.5 rounded bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
+                                <span className="text-[10px] font-black uppercase tracking-widest px-2.5 py-0.5 rounded bg-red-500/20 text-red-300 border border-red-500/30">
                                   {v.badge}
                                 </span>
                                 <span className={`text-[11px] font-black px-2.5 py-0.5 rounded-full border ${scoreColor}`}>
@@ -4862,7 +5061,7 @@ Kembalikan dalam format JSON yang valid:
                               }`}>
                                 {v.isLoading ? (
                                   <div className="flex flex-col items-center justify-center p-4">
-                                    <div className="w-8 h-8 border-3 border-indigo-500 border-t-transparent rounded-full animate-spin mb-2"></div>
+                                    <div className="w-8 h-8 border-3 border-red-500 border-t-transparent rounded-full animate-spin mb-2"></div>
                                     <span className="text-[10px] text-zinc-400 font-bold animate-pulse">Rendering Google Flow...</span>
                                   </div>
                                 ) : v.imageUrl ? (
@@ -4893,14 +5092,14 @@ Kembalikan dalam format JSON yang valid:
 
                               <div className="space-y-2 p-3 rounded-xl border bg-zinc-950/40 border-zinc-800/80">
                                 <div className="flex justify-between items-center text-[10px] font-extrabold uppercase text-zinc-300 mb-1">
-                                  <span className="flex items-center gap-1"><BarChart2 className="h-3 w-3 text-indigo-400" /> Score Metrik Visual AI</span>
-                                  <span className="text-indigo-400 font-black">{v.ctrScore}/100</span>
+                                  <span className="flex items-center gap-1"><BarChart2 className="h-3 w-3 text-red-400" /> Score Metrik Visual AI</span>
+                                  <span className="text-red-400 font-black">{v.ctrScore}/100</span>
                                 </div>
 
                                 {[
                                   { label: 'Kejelasan Wajah', val: v.evalBreakdown?.faceProminence || 8, color: 'bg-amber-400' },
                                   { label: 'Keterbacaan Teks', val: v.evalBreakdown?.textReadability || 9, color: 'bg-emerald-400' },
-                                  { label: 'Pemicu Penasaran', val: v.evalBreakdown?.curiosityGap || 9, color: 'bg-indigo-400' },
+                                  { label: 'Pemicu Penasaran', val: v.evalBreakdown?.curiosityGap || 9, color: 'bg-red-400' },
                                   { label: 'Kontras Warna', val: v.evalBreakdown?.colorPop || 8, color: 'bg-purple-400' }
                                 ].map((m, mIdx) => (
                                   <div key={mIdx} className="space-y-0.5">
@@ -4928,7 +5127,7 @@ Kembalikan dalam format JSON yang valid:
                                 className={`w-full py-2 px-3 rounded-xl text-xs font-extrabold transition-all flex items-center justify-center gap-1.5 ${
                                   isSelected 
                                     ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-600/30' 
-                                    : 'bg-indigo-600 hover:bg-indigo-700 text-white'
+                                    : 'bg-red-600 hover:bg-red-700 text-white'
                                 }`}
                               >
                                 <span>📌</span>
@@ -4983,7 +5182,7 @@ Kembalikan dalam format JSON yang valid:
                   <button
                     onClick={() => setActiveStep(5)}
                     className={`px-5 py-2.5 rounded-lg font-bold text-xs transition-all flex items-center gap-2 ${
-                      darkMode ? 'bg-indigo-600 hover:bg-indigo-700 text-white' : 'bg-slate-900 text-white'
+                      darkMode ? 'bg-red-600 hover:bg-red-700 text-white' : 'bg-slate-900 text-white'
                     }`}
                   >
                     Lanjut ke Pengaturan SEO
@@ -4999,8 +5198,8 @@ Kembalikan dalam format JSON yang valid:
                 <div className={`p-6 rounded-2xl border ${darkMode ? 'bg-zinc-900/50 border-zinc-800' : 'bg-white border-slate-300 shadow-md'}`}>
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                     <div>
-                      <h3 className="text-base font-black flex items-center gap-2 text-indigo-500">
-                        <Globe className="h-4 w-4 text-indigo-500" />
+                      <h3 className="text-base font-black flex items-center gap-2 text-red-500">
+                        <Globe className="h-4 w-4 text-red-500" />
                         Step 5: SEO Metadata & Algorithmic Growth Engine
                       </h3>
                       <p className={`text-xs mt-1 ${darkMode ? 'text-zinc-400' : 'text-slate-700 font-medium'}`}>
@@ -5010,7 +5209,7 @@ Kembalikan dalam format JSON yang valid:
 
                     <button
                       onClick={handleGenerateSEO}
-                      className="px-4 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-xl flex items-center justify-center gap-2 shadow-lg shadow-indigo-600/20 shrink-0"
+                      className="px-4 py-2.5 bg-red-600 hover:bg-red-700 text-white text-xs font-bold rounded-xl flex items-center justify-center gap-2 shadow-lg shadow-red-600/20 shrink-0"
                     >
                       <span>🏷️</span>
                       <RefreshCw className="h-3.5 w-3.5" /> Regenerasi Paket SEO
@@ -5031,7 +5230,7 @@ Kembalikan dalam format JSON yang valid:
                           </div>
                           <button 
                             onClick={() => handleCopyText(seoData.selectedTitle || seoData.viralTitles[0], 'seo-selected-title')}
-                            className="px-2.5 py-1 rounded-lg bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-400 text-[10px] font-black border border-indigo-500/30 transition-all flex items-center gap-1"
+                            className="px-2.5 py-1 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-400 text-[10px] font-black border border-red-500/30 transition-all flex items-center gap-1"
                           >
                             <span>📋</span> {copiedStates['seo-selected-title'] ? '✅ Disalin!' : 'Salin Judul Terpilih'}
                           </button>
@@ -5046,13 +5245,13 @@ Kembalikan dalam format JSON yang valid:
                                 onClick={() => setSeoData(prev => ({ ...prev, selectedTitle: title }))}
                                 className={`p-3 rounded-xl border cursor-pointer transition-all flex items-start gap-3 ${
                                   isSelected 
-                                    ? 'bg-indigo-600/10 border-indigo-500 ring-1 ring-indigo-500/50' 
+                                    ? 'bg-red-600/10 border-red-500 ring-1 ring-red-500/50' 
                                     : (darkMode ? 'bg-zinc-950/40 border-zinc-800 hover:border-zinc-700' : 'bg-slate-50 border-slate-200 hover:border-slate-300')
                                 }`}
                               >
                                 <div className="mt-0.5 shrink-0">
                                   {isSelected ? (
-                                    <span className="h-4 w-4 rounded-full bg-indigo-600 flex items-center justify-center text-white text-[9px] font-bold">✓</span>
+                                    <span className="h-4 w-4 rounded-full bg-red-600 flex items-center justify-center text-white text-[9px] font-bold">✓</span>
                                   ) : (
                                     <span className="h-4 w-4 rounded-full border border-zinc-600 block"></span>
                                   )}
@@ -5061,7 +5260,7 @@ Kembalikan dalam format JSON yang valid:
                                   <span className="text-[9px] font-extrabold text-zinc-400 uppercase tracking-widest block mb-0.5">
                                     Opsi #{idx + 1} {idx === 0 && '⚡ (High CTR)'}
                                   </span>
-                                  <h5 className={`text-xs font-bold leading-relaxed ${isSelected ? 'text-indigo-400 font-black' : (darkMode ? 'text-zinc-200' : 'text-slate-900')}`}>
+                                  <h5 className={`text-xs font-bold leading-relaxed ${isSelected ? 'text-red-400 font-black' : (darkMode ? 'text-zinc-200' : 'text-slate-900')}`}>
                                     {title}
                                   </h5>
                                 </div>
@@ -5074,14 +5273,14 @@ Kembalikan dalam format JSON yang valid:
                       <div className={`p-5 rounded-2xl border ${darkMode ? 'bg-zinc-900/60 border-zinc-800' : 'bg-white border-slate-300 shadow-md'}`}>
                         <div className="flex items-center justify-between pb-3 mb-3 border-b border-zinc-800/60">
                           <div className="flex items-center gap-2">
-                            <FileText className="h-4 w-4 text-indigo-400" />
-                            <h4 className="text-xs font-extrabold uppercase tracking-wider text-indigo-400">
+                            <FileText className="h-4 w-4 text-red-400" />
+                            <h4 className="text-xs font-extrabold uppercase tracking-wider text-red-400">
                               2. Deskripsi SEO YouTube & Timecode Bab
                             </h4>
                           </div>
                           <button 
                             onClick={() => handleCopyText(seoData.description, 'seo-description')}
-                            className="px-2.5 py-1 rounded-lg bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-400 text-[10px] font-black border border-indigo-500/30 transition-all flex items-center gap-1"
+                            className="px-2.5 py-1 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-400 text-[10px] font-black border border-red-500/30 transition-all flex items-center gap-1"
                           >
                             <span>📋</span> {copiedStates['seo-description'] ? '✅ Disalin!' : 'Salin Deskripsi Lengkap'}
                           </button>
@@ -5158,7 +5357,7 @@ Kembalikan dalam format JSON yang valid:
                             <span className="text-[9px] font-extrabold text-zinc-400 uppercase tracking-wider block mb-1.5">Hashtags Popular:</span>
                             <div className="flex flex-wrap gap-1.5">
                               {seoData.hashtags.map((hash, idx) => (
-                                <span key={idx} className="text-[11px] font-extrabold text-indigo-400">
+                                <span key={idx} className="text-[11px] font-extrabold text-red-400">
                                   {hash}
                                 </span>
                               ))}
@@ -5183,7 +5382,7 @@ Kembalikan dalam format JSON yang valid:
                   <button
                     onClick={() => setActiveStep(6)}
                     className={`px-5 py-2.5 rounded-lg font-bold text-xs transition-all flex items-center gap-2 ${
-                      darkMode ? 'bg-indigo-600 hover:bg-indigo-700 text-white' : 'bg-slate-900 text-white'
+                      darkMode ? 'bg-red-600 hover:bg-red-700 text-white' : 'bg-slate-900 text-white'
                     }`}
                   >
                     Selesai & Simpan Proyek
@@ -5203,7 +5402,7 @@ Kembalikan dalam format JSON yang valid:
                     <CheckCircle className="h-10 w-10 text-emerald-400" />
                   </div>
 
-                  <h3 className="text-2xl font-black tracking-tight bg-gradient-to-r from-indigo-400 via-purple-300 to-amber-300 bg-clip-text text-transparent">
+                  <h3 className="text-2xl font-black tracking-tight bg-gradient-to-r from-red-400 via-purple-300 to-amber-300 bg-clip-text text-transparent">
                     Proyek Pra-Produksi Selesai 100%!
                   </h3>
                   <p className="text-xs text-zinc-400 mt-2 max-w-md mx-auto leading-relaxed">
@@ -5214,7 +5413,7 @@ Kembalikan dalam format JSON yang valid:
                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 my-6 p-4 rounded-2xl border bg-zinc-950/60 border-zinc-800 text-left">
                     <div>
                       <span className="text-[9px] font-extrabold uppercase text-zinc-400 block mb-1">Total Kata Skrip</span>
-                      <strong className="text-xs font-black text-indigo-400">
+                      <strong className="text-xs font-black text-red-400">
                         {generatedScript.split(/\s+/).filter(w => w).length} Kata
                       </strong>
                     </div>
@@ -5243,13 +5442,13 @@ Kembalikan dalam format JSON yang valid:
 
                   {/* ZIPPING PROGRESS BAR */}
                   {isZippingAssetPackage && (
-                    <div className="mb-6 p-4 rounded-xl border bg-indigo-500/10 border-indigo-500/30 text-indigo-300 space-y-2">
+                    <div className="mb-6 p-4 rounded-xl border bg-red-500/10 border-red-500/30 text-red-300 space-y-2">
                       <div className="flex justify-between items-center text-xs font-bold">
                         <span>Mengompresi & Memaketkan Aset ke .ZIP...</span>
                         <span>{zipProgressPercent}%</span>
                       </div>
                       <div className="h-2 w-full bg-zinc-800 rounded-full overflow-hidden">
-                        <div className="h-full bg-indigo-500 transition-all duration-300" style={{ width: `${zipProgressPercent}%` }}></div>
+                        <div className="h-full bg-red-500 transition-all duration-300" style={{ width: `${zipProgressPercent}%` }}></div>
                       </div>
                     </div>
                   )}
@@ -5268,11 +5467,11 @@ Kembalikan dalam format JSON yang valid:
                     <button
                       onClick={handleDownloadAssetZip}
                       disabled={isZippingAssetPackage}
-                      className="p-5 rounded-2xl font-extrabold bg-indigo-600 hover:bg-indigo-700 text-white text-xs transition-all flex flex-col items-center justify-center gap-1.5 shadow-xl shadow-indigo-600/30 disabled:opacity-50"
+                      className="p-5 rounded-2xl font-extrabold bg-red-600 hover:bg-red-700 text-white text-xs transition-all flex flex-col items-center justify-center gap-1.5 shadow-xl shadow-red-600/30 disabled:opacity-50"
                     >
                       <span className="text-base">📦</span>
                       <span>Unduh Paket Aset Lengkap (.ZIP)</span>
-                      <span className="text-[9px] font-normal text-indigo-100">Termasuk /blueprint.txt, /audio, /thumbnail, /scenes</span>
+                      <span className="text-[9px] font-normal text-red-100">Termasuk /blueprint.txt, /audio, /thumbnail, /scenes</span>
                     </button>
                   </div>
 
@@ -5328,6 +5527,11 @@ Kembalikan dalam format JSON yang valid:
       <OnboardingModal
         isOpen={showOnboarding}
         onDismiss={handleDismissOnboarding}
+        onOpenApiKeySettings={() => setShowApiKeyModal(true)}
+      />
+      <ImageBillingRequiredModal
+        data={imageBillingModalPrompt}
+        onClose={() => setImageBillingModalPrompt(null)}
         onOpenApiKeySettings={() => setShowApiKeyModal(true)}
       />
       <ImagePreviewModal previewData={activePreviewImage} onClose={() => setActivePreviewImage(null)} />
