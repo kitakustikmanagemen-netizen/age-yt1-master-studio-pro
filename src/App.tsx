@@ -53,7 +53,8 @@ import {
   PanelLeftOpen,
   Image as LucideImage,
   X,
-  KeyRound
+  KeyRound,
+  Menu
 } from 'lucide-react';
 
 export interface FaceReference {
@@ -494,6 +495,17 @@ export const STEPS_LIST = [
   { step: 4, label: 'Thumbnail Studio', icon: Eye, desc: 'A/B Test & Canvas Editor' },
   { step: 5, label: 'SEO & Meta Tags', icon: Globe, desc: 'Titles, Chapters & Tags' },
   { step: 6, label: 'Ekspor Blueprint', icon: PackageCheck, desc: 'ZIP Asset Package' }
+];
+
+// Dipakai KHUSUS untuk tampilan menu Sidebar — menggabungkan Storyboard Scene & Thumbnail Studio
+// jadi satu entri menu (sub-tab switcher-nya ada di dalam konten). STEPS_LIST di atas TIDAK diubah,
+// supaya semua lookup by-index (mis. "Langkah {activeStep}: ...") dan tombol "Lanjut ke Step X" tetap aman.
+export const SIDEBAR_NAV_GROUPS = [
+  { steps: [1], label: 'Topik & Riset', icon: Flame, desc: 'Find Trending Niche' },
+  { steps: [2], label: 'Skrip & Karakter', icon: BookOpen, desc: 'Script & 6-Face Slots' },
+  { steps: [3, 4], label: 'Storyboard & Thumbnail', icon: Sparkles, desc: 'Scene Prompts & Visual Studio' },
+  { steps: [5], label: 'SEO & Meta Tags', icon: Globe, desc: 'Titles, Chapters & Tags' },
+  { steps: [6], label: 'Ekspor Blueprint', icon: PackageCheck, desc: 'ZIP Asset Package' }
 ];
 
 export const getUrl = (modelPath: string, key: string) => {
@@ -1538,6 +1550,7 @@ export const CanvasEditorModal: React.FC<{
 export const Header: React.FC<{
   isSidebarOpen: boolean;
   setIsSidebarOpen: (open: boolean) => void;
+  onOpenMobileSidebar: () => void;
   activeStep: number;
   topicQuery: string;
   darkMode: boolean;
@@ -1545,43 +1558,52 @@ export const Header: React.FC<{
 }> = ({
   isSidebarOpen,
   setIsSidebarOpen,
+  onOpenMobileSidebar,
   activeStep,
   topicQuery,
   darkMode,
   setShowResetModal
 }) => {
   return (
-    <header className={`px-6 py-3.5 border-b flex items-center justify-between backdrop-blur-md z-30 shrink-0 ${
+    <header className={`px-3 sm:px-6 py-3.5 border-b flex items-center justify-between backdrop-blur-md z-30 shrink-0 ${
       darkMode ? 'bg-zinc-900/80 border-zinc-800' : 'bg-white/90 border-slate-200 shadow-sm'
     }`}>
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-2 sm:gap-3 min-w-0">
+        <button
+          onClick={onOpenMobileSidebar}
+          className="p-1.5 rounded-xl border border-zinc-800 hover:bg-zinc-800 text-zinc-300 transition-colors lg:hidden shrink-0"
+          title="Buka Menu"
+        >
+          <Menu className="h-4 w-4 text-red-400" />
+        </button>
+
         {!isSidebarOpen && (
           <button
             onClick={() => setIsSidebarOpen(true)}
-            className="p-1.5 rounded-xl border border-zinc-800 hover:bg-zinc-800 text-zinc-300 transition-colors flex items-center gap-1 text-xs font-bold"
+            className="p-1.5 rounded-xl border border-zinc-800 hover:bg-zinc-800 text-zinc-300 transition-colors items-center gap-1 text-xs font-bold hidden lg:flex"
           >
             <PanelLeftOpen className="h-4 w-4 text-red-400" />
             <span className="hidden sm:inline">Navigasi</span>
           </button>
         )}
 
-        <div className="flex items-center gap-2">
-          <span className="text-xs font-black uppercase tracking-wider text-red-400">
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="text-xs font-black uppercase tracking-wider text-red-400 whitespace-nowrap">
             Langkah {activeStep}: {STEPS_LIST[activeStep - 1].label}
           </span>
           <span className="text-xs text-zinc-500 hidden sm:inline">•</span>
-          <span className="text-xs font-bold text-zinc-400 truncate max-w-[200px] sm:max-w-xs">
+          <span className="text-xs font-bold text-zinc-400 truncate max-w-[120px] sm:max-w-xs">
             Niche: "{topicQuery || 'Umum'}"
           </span>
         </div>
       </div>
 
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-2 shrink-0">
         <button
           onClick={() => setShowResetModal(true)}
-          className="px-3 py-1.5 rounded-xl border border-zinc-800 hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200 text-xs font-bold transition-all flex items-center gap-1.5"
+          className="px-2 sm:px-3 py-1.5 rounded-xl border border-zinc-800 hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200 text-xs font-bold transition-all flex items-center gap-1.5"
         >
-          <span>🔄</span> Reset Proyek
+          <span>🔄</span> <span className="hidden sm:inline">Reset Proyek</span>
         </button>
       </div>
     </header>
@@ -1591,6 +1613,8 @@ export const Header: React.FC<{
 export const Sidebar: React.FC<{
   isSidebarOpen: boolean;
   setIsSidebarOpen: (open: boolean) => void;
+  isMobileSidebarOpen: boolean;
+  onCloseMobileSidebar: () => void;
   activeStep: number;
   setActiveStep: (step: number) => void;
   selectedTopics: any[];
@@ -1609,6 +1633,8 @@ export const Sidebar: React.FC<{
 }> = ({
   isSidebarOpen,
   setIsSidebarOpen,
+  isMobileSidebarOpen,
+  onCloseMobileSidebar,
   activeStep,
   setActiveStep,
   selectedTopics,
@@ -1626,7 +1652,17 @@ export const Sidebar: React.FC<{
   onOpenApiKeySettings
 }) => {
   return (
-    <aside className={`h-full border-r transition-all duration-300 ease-in-out flex flex-col shrink-0 z-40 ${
+    <>
+      {/* Backdrop khusus mobile — klik di luar sidebar untuk menutup */}
+      {isMobileSidebarOpen && (
+        <div
+          className="fixed inset-0 bg-black/60 z-30 lg:hidden"
+          onClick={onCloseMobileSidebar}
+        />
+      )}
+      <aside className={`h-full border-r transition-all duration-300 ease-in-out flex flex-col shrink-0 z-40
+        fixed inset-y-0 left-0 lg:relative
+        ${isMobileSidebarOpen ? 'translate-x-0' : '-translate-x-full'} lg:translate-x-0 ${
       darkMode ? 'bg-zinc-900/90 border-zinc-800' : 'bg-white border-slate-200 shadow-md'
     } ${isSidebarOpen ? 'w-64' : 'w-20'}`}>
       <div className="p-4 border-b border-zinc-800/80 flex items-center justify-between">
@@ -1644,10 +1680,18 @@ export const Sidebar: React.FC<{
 
         <button
           onClick={() => setIsSidebarOpen(!isSidebarOpen)}
-          className="p-1.5 rounded-lg border border-zinc-800 hover:bg-zinc-800 text-zinc-400 hover:text-zinc-100 transition-colors"
+          className="p-1.5 rounded-lg border border-zinc-800 hover:bg-zinc-800 text-zinc-400 hover:text-zinc-100 transition-colors hidden lg:block"
           title={isSidebarOpen ? 'Tutup Sidebar' : 'Buka Sidebar'}
         >
           {isSidebarOpen ? <PanelLeftClose className="h-4 w-4" /> : <PanelLeftOpen className="h-4 w-4" />}
+        </button>
+
+        <button
+          onClick={onCloseMobileSidebar}
+          className="p-1.5 rounded-lg border border-zinc-800 hover:bg-zinc-800 text-zinc-400 hover:text-zinc-100 transition-colors lg:hidden"
+          title="Tutup Menu"
+        >
+          <X className="h-4 w-4" />
         </button>
       </div>
 
@@ -1700,20 +1744,23 @@ export const Sidebar: React.FC<{
       </div>
 
       <nav className="flex-1 p-3 space-y-1.5 overflow-y-auto">
-        {STEPS_LIST.map((stepItem) => {
-          const StepIcon = stepItem.icon;
-          const isActive = activeStep === stepItem.step;
-          const isCompleted = activeStep > stepItem.step;
+        {SIDEBAR_NAV_GROUPS.map((group) => {
+          const GroupIcon = group.icon;
+          const isActive = group.steps.includes(activeStep);
+          const maxStepInGroup = Math.max(...group.steps);
+          const isCompleted = activeStep > maxStepInGroup;
+          const targetStep = group.steps[0];
 
           return (
             <button
-              key={stepItem.step}
+              key={group.steps.join('-')}
               onClick={() => {
-                if (stepItem.step > activeStep && selectedTopics.length === 0 && !generatedScript) {
+                if (targetStep > activeStep && selectedTopics.length === 0 && !generatedScript) {
                   setErrorMessage('Silakan tentukan topik atau buat skrip manual di Step 1 terlebih dahulu.');
                   return;
                 }
-                setActiveStep(stepItem.step);
+                setActiveStep(targetStep);
+                onCloseMobileSidebar();
               }}
               className={`w-full p-2.5 rounded-xl text-left transition-all flex items-center justify-between group ${
                 isActive
@@ -1727,13 +1774,13 @@ export const Sidebar: React.FC<{
                 <div className={`p-1.5 rounded-lg ${
                   isActive ? 'bg-white/20 text-white' : isCompleted ? 'bg-emerald-500/20 text-emerald-400' : 'bg-zinc-800 text-zinc-400'
                 }`}>
-                  <StepIcon className="h-4 w-4" />
+                  <GroupIcon className="h-4 w-4" />
                 </div>
 
                 {isSidebarOpen && (
                   <div>
-                    <span className="block text-xs font-bold leading-none">{stepItem.label}</span>
-                    <span className="text-[9px] text-zinc-400 font-normal mt-0.5 block">{stepItem.desc}</span>
+                    <span className="block text-xs font-bold leading-none">{group.label}</span>
+                    <span className="text-[9px] text-zinc-400 font-normal mt-0.5 block">{group.desc}</span>
                   </div>
                 )}
               </div>
@@ -1776,6 +1823,7 @@ export const Sidebar: React.FC<{
         )}
       </div>
     </aside>
+    </>
   );
 };
 
@@ -1783,6 +1831,7 @@ export function App() {
   const [darkMode, setDarkMode] = useState(true);
   const [viewMode, setViewMode] = useState<'pc' | 'mobile'>('pc');
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+  const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
   
   const [selectedVisualStyle, setSelectedVisualStyle] = useState<'stickman' | 'cyberpunk' | 'pixar' | 'cinematic' | 'vector'>('stickman');
   const [failedSceneIndices, setFailedSceneIndices] = useState<number[]>([]);
@@ -3682,6 +3731,8 @@ Kembalikan dalam format JSON yang valid:
       <Sidebar
         isSidebarOpen={isSidebarOpen}
         setIsSidebarOpen={setIsSidebarOpen}
+        isMobileSidebarOpen={isMobileSidebarOpen}
+        onCloseMobileSidebar={() => setIsMobileSidebarOpen(false)}
         activeStep={activeStep}
         setActiveStep={setActiveStep}
         selectedTopics={selectedTopics}
@@ -3706,6 +3757,7 @@ Kembalikan dalam format JSON yang valid:
         <Header
           isSidebarOpen={isSidebarOpen}
           setIsSidebarOpen={setIsSidebarOpen}
+          onOpenMobileSidebar={() => setIsMobileSidebarOpen(true)}
           activeStep={activeStep}
           topicQuery={topicQuery}
           darkMode={darkMode}
@@ -4337,6 +4389,28 @@ Kembalikan dalam format JSON yang valid:
                     <ArrowRight className="h-4 w-4" />
                   </button>
                 </div>
+              </div>
+            )}
+
+            {/* SUB-TAB SWITCHER: Storyboard & Thumbnail Studio digabung jadi 1 menu di sidebar */}
+            {(activeStep === 3 || activeStep === 4) && (
+              <div className="flex items-center gap-1.5 p-1 rounded-xl border border-zinc-800 bg-zinc-950/60 w-fit mb-1 overflow-x-auto max-w-full">
+                <button
+                  onClick={() => setActiveStep(3)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-bold whitespace-nowrap transition-all ${
+                    activeStep === 3 ? 'bg-red-600 text-white shadow-md' : 'text-zinc-400 hover:text-zinc-200'
+                  }`}
+                >
+                  🎬 Storyboard Scene
+                </button>
+                <button
+                  onClick={() => setActiveStep(4)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-bold whitespace-nowrap transition-all ${
+                    activeStep === 4 ? 'bg-red-600 text-white shadow-md' : 'text-zinc-400 hover:text-zinc-200'
+                  }`}
+                >
+                  🖼️ Thumbnail Studio
+                </button>
               </div>
             )}
 
