@@ -125,7 +125,7 @@ export interface NetworkSpeedState {
   effectiveType: string;
 }
 
-export type ApiProvider = 'gemini' | 'openrouter' | 'groq';
+export type ApiProvider = 'gemini' | 'openrouter' | 'groq' | 'pexels';
 
 export interface StoredApiKey {
   id: string;
@@ -410,6 +410,58 @@ const blobToBase64 = (blob: Blob): Promise<string> => {
     reader.onerror = reject;
     reader.readAsDataURL(blob);
   });
+};
+
+// Pexels: fallback stok foto ASLI (bukan AI-generated) untuk gambar TANPA referensi wajah.
+// Pexels itu MESIN PENCARI, bukan AI generator — jadi prompt panjang & detail perlu disederhanakan dulu jadi kata kunci singkat.
+const PEXELS_ORIENTATION: Record<'16:9' | '9:16', 'landscape' | 'portrait'> = {
+  '16:9': 'landscape',
+  '9:16': 'portrait'
+};
+
+const simplifyPromptForSearch = (promptText: string): string => {
+  // Buang bagian negative-prompt / instruksi teknis panjang (mis. "text, watermark, deformed...")
+  // supaya query pencarian tetap relevan dan singkat.
+  const firstSegment = promptText.split(/[.\n]|(?:,\s*(?:text|watermark|deformed|blurred|4k|8k|hyperrealistic))/i)[0] || promptText;
+  const words = firstSegment.trim().split(/\s+/).slice(0, 8);
+  return words.join(' ').replace(/["'“”]/g, '').trim();
+};
+
+const generateImageViaPexels = async (storedKey: StoredApiKey, promptText: string, aspectRatio: '16:9' | '9:16') => {
+  const query = simplifyPromptForSearch(promptText);
+  if (!query) {
+    throw new Error('Prompt kosong, tidak bisa mencari di Pexels.');
+  }
+  const orientation = PEXELS_ORIENTATION[aspectRatio] || 'landscape';
+  const searchUrl = `https://api.pexels.com/v1/search?query=${encodeURIComponent(query)}&orientation=${orientation}&per_page=1`;
+
+  const searchResponse = await fetch(searchUrl, {
+    headers: { Authorization: storedKey.key.trim() }
+  });
+  if (!searchResponse.ok) {
+    throw new Error(`Pencarian Pexels gagal (HTTP ${searchResponse.status}).`);
+  }
+  const searchData = await searchResponse.json();
+  const photo = searchData?.photos?.[0];
+  if (!photo) {
+    throw new Error(`Tidak ada hasil foto Pexels untuk "${query}".`);
+  }
+  const imageUrl = photo.src?.large2x || photo.src?.large || photo.src?.original;
+  if (!imageUrl) {
+    throw new Error('Pexels tidak mengembalikan URL gambar yang valid.');
+  }
+
+  const imageResponse = await fetch(imageUrl);
+  if (!imageResponse.ok) {
+    throw new Error(`Gagal mengunduh gambar dari Pexels (HTTP ${imageResponse.status}).`);
+  }
+  const blob = await imageResponse.blob();
+  const base64 = await blobToBase64(blob);
+
+  return {
+    candidates: [{ content: { parts: [{ inlineData: { mimeType: blob.type || 'image/jpeg', data: base64 } }] } }],
+    _fallbackProvider: 'pexels'
+  };
 };
 
 const generateImageViaPollinations = async (promptText: string, aspectRatio: '16:9' | '9:16') => {
@@ -717,6 +769,17 @@ export const generateImage = async (parts: any[], aspectRatio: string = '16:9') 
       const textPart = parts.find((p: any) => p && typeof p.text === 'string');
       const promptText = textPart?.text || '';
       const safeAspect: '16:9' | '9:16' = aspectRatio === '9:16' ? '9:16' : '16:9';
+
+      // Kalau user sudah pasang key Pexels, coba dulu (stok foto asli, biasanya lebih relevan untuk B-roll/background).
+      const pexelsKeys = getActiveKeysByProvider('pexels');
+      for (const pexelsKey of pexelsKeys) {
+        try {
+          return await generateImageViaPexels(pexelsKey, promptText, safeAspect);
+        } catch (pexelsErr) {
+          continue; // coba key Pexels lain, atau lanjut ke Pollinations di bawah
+        }
+      }
+
       return await generateImageViaPollinations(promptText, safeAspect);
     } catch (fallbackErr) {
       throw geminiError;
@@ -950,6 +1013,13 @@ const PROVIDER_INFO: Record<ApiProvider, { label: string; badgeClass: string; si
     signupUrl: 'https://console.groq.com/keys',
     signupLabel: 'Dapatkan gratis di Groq Console',
     note: 'Fallback TEKS saja, sangat cepat — dipakai kalau semua key Gemini habis kuota.'
+  },
+  pexels: {
+    label: 'Pexels',
+    badgeClass: 'bg-emerald-500/15 text-emerald-400',
+    signupUrl: 'https://www.pexels.com/api/',
+    signupLabel: 'Dapatkan gratis di Pexels API',
+    note: 'Fallback GAMBAR berupa stok foto ASLI (bukan AI), untuk scene TANPA referensi wajah — dicoba lebih dulu sebelum Pollinations.ai.'
   }
 };
 
@@ -1081,7 +1151,7 @@ export const ApiKeyModal: React.FC<{
             className="w-full p-2 rounded-lg bg-zinc-950 border border-zinc-800 text-xs font-mono focus:outline-none focus:border-red-500"
           />
 
-          {newProvider !== 'gemini' && (
+          {(newProvider === 'openrouter' || newProvider === 'groq') && (
             <button
               onClick={() => setShowAdvanced(!showAdvanced)}
               className="text-[10px] text-zinc-500 hover:text-zinc-300"
@@ -1089,7 +1159,7 @@ export const ApiKeyModal: React.FC<{
               {showAdvanced ? '▾ Sembunyikan opsi lanjutan' : '▸ Opsi lanjutan (ganti model)'}
             </button>
           )}
-          {newProvider !== 'gemini' && showAdvanced && (
+          {(newProvider === 'openrouter' || newProvider === 'groq') && showAdvanced && (
             <input
               type="text"
               value={newModel}

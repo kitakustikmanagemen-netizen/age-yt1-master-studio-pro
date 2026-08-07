@@ -49,6 +49,7 @@ Buka tool ini, klik badge **"API Key"** di sidebar kiri untuk membuka panel Peng
 |---|---|---|
 | **Google Gemini** (utama, wajib untuk fitur lengkap) | Teks, gambar (dengan referensi wajah), TTS, riset real-time (Google Search) | https://aistudio.google.com/apikey |
 | **OpenRouter** (fallback opsional) | Teks saja — dipakai otomatis kalau semua key Gemini habis kuota | https://openrouter.ai/keys |
+| **Pexels** (fallback opsional) | Gambar stok ASLI (bukan AI) untuk scene TANPA referensi wajah — dicoba sebelum Pollinations.ai | https://www.pexels.com/api/ |
 | **Groq** (fallback opsional) | Teks saja, sangat cepat — dipakai otomatis kalau semua key Gemini habis kuota | https://console.groq.com/keys |
 
 Semua key hanya tersimpan di **localStorage browser pengguna masing-masing** — tidak pernah dikirim atau disimpan di server manapun.
