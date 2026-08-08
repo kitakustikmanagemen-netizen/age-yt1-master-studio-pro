@@ -93,6 +93,7 @@ export interface ThumbnailVariant {
   overlayText: string;
   imageUrl: string;
   imageSource?: string;
+  pexelsAttribution?: { photographer: string; photographerUrl: string; photoUrl: string };
   isLoading: boolean;
   ctrScore: number;
   estimatedCtrRange: string;
@@ -461,7 +462,12 @@ const generateImageViaPexels = async (storedKey: StoredApiKey, promptText: strin
 
   return {
     candidates: [{ content: { parts: [{ inlineData: { mimeType: blob.type || 'image/jpeg', data: base64 } }] } }],
-    _fallbackProvider: 'pexels'
+    _fallbackProvider: 'pexels',
+    _pexelsAttribution: {
+      photographer: photo.photographer || 'Unknown',
+      photographerUrl: photo.photographer_url || 'https://www.pexels.com',
+      photoUrl: photo.url || 'https://www.pexels.com'
+    }
   };
 };
 
@@ -1230,7 +1236,7 @@ export const ImageBillingRequiredModal: React.FC<{
       <div className="p-6 rounded-2xl max-w-lg w-full border shadow-2xl bg-zinc-900 border-zinc-800 text-zinc-100 max-h-[85vh] overflow-y-auto">
         <div className="flex items-center justify-between mb-1">
           <h4 className="text-base font-bold flex items-center gap-2 text-amber-400">
-            <span>⚠️</span> Generate Gambar Butuh Billing Aktif
+            <span>💡</span> Yuk, Lengkapi Gambarnya!
           </h4>
           <button onClick={onClose} className="p-1.5 rounded-lg text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100">
             <X className="h-4 w-4" />
@@ -1238,11 +1244,18 @@ export const ImageBillingRequiredModal: React.FC<{
         </div>
 
         <p className="text-[11px] text-zinc-400 mt-2 leading-relaxed">
-          Google TIDAK menyediakan kuota gratis sama sekali untuk generate gambar dengan referensi wajah (kebijakan resmi, bukan bug atau kuota yang sekadar habis). Menunggu atau menambah API Key baru tidak akan membantu — satu-satunya cara adalah mengaktifkan billing di Google Cloud Project milik API Key Anda.
+          Untuk generate gambar dengan referensi wajah, Google memang mewajibkan billing aktif di API Key-nya (kebijakan resmi mereka, bukan kesalahan Anda). Tapi tenang, ini bukan jalan buntu — di bawah ini ada beberapa cara untuk tetap mendapatkan hasil yang benar-benar sesuai keinginan Anda. 🙂
         </p>
 
-        <div className="mt-3 p-2.5 rounded-xl border border-amber-500/20 bg-amber-500/10 text-[11px] text-amber-300">
-          Jangan khawatir — di bawah ini tetap kami siapkan <b>teks prompt</b> hasil AI yang bisa Anda salin dan generate secara manual di tool gambar/video AI lain (Midjourney, Leonardo.ai, Veo, Kling, dll).
+        <div className="mt-3 p-2.5 rounded-xl border border-red-500/20 bg-red-500/10 text-[11px] text-red-300">
+          <b>Cara Tercepat:</b> Salin prompt di bawah, lalu tempelkan (paste) ke salah satu situs generate gambar/video AI gratis berikut ini:
+          <div className="mt-2 grid grid-cols-2 gap-1.5">
+            <a href="https://www.bing.com/images/create" target="_blank" rel="noopener noreferrer" className="px-2 py-1.5 rounded-lg bg-zinc-900/60 hover:bg-zinc-900 text-center text-[10px] font-bold text-zinc-200 border border-zinc-800">🖼️ Bing Image Creator</a>
+            <a href="https://ideogram.ai" target="_blank" rel="noopener noreferrer" className="px-2 py-1.5 rounded-lg bg-zinc-900/60 hover:bg-zinc-900 text-center text-[10px] font-bold text-zinc-200 border border-zinc-800">🖼️ Ideogram (teks jelas)</a>
+            <a href="https://klingai.com" target="_blank" rel="noopener noreferrer" className="px-2 py-1.5 rounded-lg bg-zinc-900/60 hover:bg-zinc-900 text-center text-[10px] font-bold text-zinc-200 border border-zinc-800">🎬 Kling AI (video)</a>
+            <a href="https://labs.google/flow" target="_blank" rel="noopener noreferrer" className="px-2 py-1.5 rounded-lg bg-zinc-900/60 hover:bg-zinc-900 text-center text-[10px] font-bold text-zinc-200 border border-zinc-800">🎬 Google Flow (video)</a>
+          </div>
+          <p className="text-[9px] text-zinc-500 mt-1.5">Semua di atas punya jatah gratis harian tanpa kartu kredit. Hasilnya mungkin tidak 100% konsisten wajah karakter, tapi cukup untuk kebanyakan kebutuhan.</p>
         </div>
 
         <div className="mt-4 space-y-3">
@@ -1280,7 +1293,8 @@ export const ImageBillingRequiredModal: React.FC<{
         </div>
 
         <div className="border-t border-zinc-800 mt-4 pt-4 space-y-2">
-          <p className="text-[11px] font-bold text-zinc-400">Cara Mengaktifkan Billing (Biaya Sangat Kecil)</p>
+          <p className="text-[11px] font-bold text-zinc-400">Atau, Kalau Mau Praktis: Aktifkan Billing (Biayanya Kecil Kok)</p>
+          <p className="text-[10px] text-zinc-500">Dengan billing aktif, Anda bisa generate gambar berwajah langsung dari tool ini secara otomatis, tanpa perlu bolak-balik ke situs lain. Biayanya biasanya cuma beberapa ribu rupiah untuk pemakaian normal.</p>
           <ol className="text-[11px] text-zinc-400 list-decimal list-inside space-y-1">
             <li>Buka <a href="https://console.cloud.google.com/billing" target="_blank" rel="noopener noreferrer" className="text-red-400 hover:underline">console.cloud.google.com/billing</a>, login akun yang sama dengan API Key Anda.</li>
             <li>Buat/hubungkan billing account, lalu tautkan ke project API Key Anda.</li>
@@ -1992,6 +2006,7 @@ export function App() {
   const [sceneRatios, setSceneRatios] = useState<Record<number, string>>({}); 
   const [sceneImages, setSceneImages] = useState<Record<number, string>>({});
   const [sceneImageSources, setSceneImageSources] = useState<Record<number, string>>({});
+  const [sceneImageAttribution, setSceneImageAttribution] = useState<Record<number, { photographer: string; photographerUrl: string; photoUrl: string }>>({});
   const [imageLoadingStates, setImageLoadingStates] = useState<Record<number, boolean>>({}); 
   const [activePreviewImage, setActivePreviewImage] = useState<{ url: string; title: string } | null>(null); 
 
@@ -2782,6 +2797,9 @@ Kembalikan data dalam format JSON yang valid:
         const generatedUrl = `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
         setSceneImages(prev => ({ ...prev, [globalIndex]: generatedUrl }));
         setSceneImageSources(prev => ({ ...prev, [globalIndex]: response._fallbackProvider || 'gemini' }));
+        if (response._pexelsAttribution) {
+          setSceneImageAttribution(prev => ({ ...prev, [globalIndex]: response._pexelsAttribution }));
+        }
         setFailedSceneIndices(prev => prev.filter(id => id !== globalIndex));
       } else {
         throw new Error("Gagal memperoleh data gambar dari model Google Flow.");
@@ -3188,7 +3206,7 @@ Kembalikan data dalam format JSON yang valid:
               if (part && part.inlineData && part.inlineData.data) {
                 const generatedUrl = `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
                 setThumbnailVariants(prev => prev.map(variant => 
-                  variant.id === v.id ? { ...variant, imageUrl: generatedUrl, imageSource: imgResponse._fallbackProvider || 'gemini', isLoading: false } : variant
+                  variant.id === v.id ? { ...variant, imageUrl: generatedUrl, imageSource: imgResponse._fallbackProvider || 'gemini', pexelsAttribution: imgResponse._pexelsAttribution, isLoading: false } : variant
                 ));
               }
             } catch (vErr) {
@@ -3271,6 +3289,7 @@ CRITICAL REQUIREMENT: You MUST overlay the following text in massive, bold, high
           overlayText: editableOverlayText,
           imageUrl: generatedUrl,
           imageSource: response._fallbackProvider || 'gemini',
+          pexelsAttribution: response._pexelsAttribution,
           isLoading: false,
           ctrScore: 92,
           estimatedCtrRange: "12.0% - 14.8%",
@@ -3325,7 +3344,7 @@ CRITICAL REQUIREMENT: You MUST overlay the following text in massive, bold, high
       if (part && part.inlineData && part.inlineData.data) {
         const generatedUrl = `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
         setThumbnailVariants(prev => prev.map(v => 
-          v.id === variantId ? { ...variant, imageUrl: generatedUrl, imageSource: imgResponse._fallbackProvider || 'gemini', overlayText: editableOverlayText, isLoading: false } : v
+          v.id === variantId ? { ...variant, imageUrl: generatedUrl, imageSource: imgResponse._fallbackProvider || 'gemini', pexelsAttribution: imgResponse._pexelsAttribution, overlayText: editableOverlayText, isLoading: false } : v
         ));
       }
     } catch (err: any) {
@@ -4965,7 +4984,7 @@ Kembalikan dalam format JSON yang valid:
                                                   <img src={imgUrl} alt={`Scene ${globalIdx}`} className="w-full h-full object-cover" />
                                                   {/* Badge sumber provider */}
                                                   {sceneImageSources[globalIdx] && (
-                                                    <div className="absolute top-1 left-1">
+                                                    <div className="absolute top-1 left-1 flex flex-col items-start gap-0.5">
                                                       <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded border ${
                                                         sceneImageSources[globalIdx] === 'gemini'
                                                           ? 'bg-zinc-900/90 border-zinc-700 text-zinc-300'
@@ -4977,6 +4996,16 @@ Kembalikan dalam format JSON yang valid:
                                                           : sceneImageSources[globalIdx] === 'pexels' ? '📷 Pexels'
                                                           : '🎨 Pollinations'}
                                                       </span>
+                                                      {sceneImageAttribution[globalIdx] && (
+                                                        <a
+                                                          href={sceneImageAttribution[globalIdx].photoUrl}
+                                                          target="_blank"
+                                                          rel="noopener noreferrer"
+                                                          className="text-[8px] px-1.5 py-0.5 rounded bg-black/70 text-zinc-300 hover:text-white underline"
+                                                        >
+                                                          Photo by {sceneImageAttribution[globalIdx].photographer} on Pexels
+                                                        </a>
+                                                      )}
                                                     </div>
                                                   )}
                                                   <div className="absolute bottom-1 right-1 flex items-center gap-1">
@@ -5233,7 +5262,7 @@ Kembalikan dalam format JSON yang valid:
                                   <>
                                     <img src={v.imageUrl} alt={v.title} className="w-full h-full object-cover" />
                                     {v.imageSource && (
-                                      <div className="absolute top-1.5 left-1.5">
+                                      <div className="absolute top-1.5 left-1.5 flex flex-col items-start gap-0.5">
                                         <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded border ${
                                           v.imageSource === 'gemini'
                                             ? 'bg-zinc-900/90 border-zinc-700 text-zinc-300'
@@ -5245,6 +5274,16 @@ Kembalikan dalam format JSON yang valid:
                                             : v.imageSource === 'pexels' ? '📷 Pexels'
                                             : '🎨 Pollinations'}
                                         </span>
+                                        {v.pexelsAttribution && (
+                                          <a
+                                            href={v.pexelsAttribution.photoUrl}
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            className="text-[8px] px-1.5 py-0.5 rounded bg-black/70 text-zinc-300 hover:text-white underline"
+                                          >
+                                            Photo by {v.pexelsAttribution.photographer} on Pexels
+                                          </a>
+                                        )}
                                       </div>
                                     )}
                                     <button
