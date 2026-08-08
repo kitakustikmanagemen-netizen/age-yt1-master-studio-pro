@@ -92,6 +92,7 @@ export interface ThumbnailVariant {
   prompt: string;
   overlayText: string;
   imageUrl: string;
+  imageSource?: string;
   isLoading: boolean;
   ctrScore: number;
   estimatedCtrRange: string;
@@ -1989,7 +1990,8 @@ export function App() {
   const [scenes, setScenes] = useState<any[]>([]); 
   const [expandedParagraphs, setExpandedParagraphs] = useState<Record<number, boolean>>({});
   const [sceneRatios, setSceneRatios] = useState<Record<number, string>>({}); 
-  const [sceneImages, setSceneImages] = useState<Record<number, string>>({}); 
+  const [sceneImages, setSceneImages] = useState<Record<number, string>>({});
+  const [sceneImageSources, setSceneImageSources] = useState<Record<number, string>>({});
   const [imageLoadingStates, setImageLoadingStates] = useState<Record<number, boolean>>({}); 
   const [activePreviewImage, setActivePreviewImage] = useState<{ url: string; title: string } | null>(null); 
 
@@ -1999,6 +2001,7 @@ export function App() {
   const [uploadedThumbnailImages, setUploadedThumbnailImages] = useState<{ id: string; dataUrl: string; name: string }[]>([]);
   
   const [thumbnailVariants, setThumbnailVariants] = useState<ThumbnailVariant[]>([]);
+  const [thumbnailImageSources, setThumbnailImageSources] = useState<Record<number, string>>({});
   const [selectedThumbnail, setSelectedThumbnail] = useState<ThumbnailVariant | null>(null);
 
   // CANVAS EDITOR ENGINE STATES
@@ -2778,6 +2781,7 @@ Kembalikan data dalam format JSON yang valid:
       if (part && part.inlineData && part.inlineData.data) {
         const generatedUrl = `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
         setSceneImages(prev => ({ ...prev, [globalIndex]: generatedUrl }));
+        setSceneImageSources(prev => ({ ...prev, [globalIndex]: response._fallbackProvider || 'gemini' }));
         setFailedSceneIndices(prev => prev.filter(id => id !== globalIndex));
       } else {
         throw new Error("Gagal memperoleh data gambar dari model Google Flow.");
@@ -3184,7 +3188,7 @@ Kembalikan data dalam format JSON yang valid:
               if (part && part.inlineData && part.inlineData.data) {
                 const generatedUrl = `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
                 setThumbnailVariants(prev => prev.map(variant => 
-                  variant.id === v.id ? { ...variant, imageUrl: generatedUrl, isLoading: false } : variant
+                  variant.id === v.id ? { ...variant, imageUrl: generatedUrl, imageSource: imgResponse._fallbackProvider || 'gemini', isLoading: false } : variant
                 ));
               }
             } catch (vErr) {
@@ -3266,6 +3270,7 @@ CRITICAL REQUIREMENT: You MUST overlay the following text in massive, bold, high
           prompt: fusionTextPrompt,
           overlayText: editableOverlayText,
           imageUrl: generatedUrl,
+          imageSource: response._fallbackProvider || 'gemini',
           isLoading: false,
           ctrScore: 92,
           estimatedCtrRange: "12.0% - 14.8%",
@@ -3320,7 +3325,7 @@ CRITICAL REQUIREMENT: You MUST overlay the following text in massive, bold, high
       if (part && part.inlineData && part.inlineData.data) {
         const generatedUrl = `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
         setThumbnailVariants(prev => prev.map(v => 
-          v.id === variantId ? { ...variant, imageUrl: generatedUrl, overlayText: editableOverlayText, isLoading: false } : v
+          v.id === variantId ? { ...variant, imageUrl: generatedUrl, imageSource: imgResponse._fallbackProvider || 'gemini', overlayText: editableOverlayText, isLoading: false } : v
         ));
       }
     } catch (err: any) {
@@ -4958,6 +4963,22 @@ Kembalikan dalam format JSON yang valid:
                                               ) : imgUrl ? (
                                                 <>
                                                   <img src={imgUrl} alt={`Scene ${globalIdx}`} className="w-full h-full object-cover" />
+                                                  {/* Badge sumber provider */}
+                                                  {sceneImageSources[globalIdx] && (
+                                                    <div className="absolute top-1 left-1">
+                                                      <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded border ${
+                                                        sceneImageSources[globalIdx] === 'gemini'
+                                                          ? 'bg-zinc-900/90 border-zinc-700 text-zinc-300'
+                                                          : sceneImageSources[globalIdx] === 'pexels'
+                                                            ? 'bg-emerald-900/90 border-emerald-700 text-emerald-300'
+                                                            : 'bg-blue-900/90 border-blue-700 text-blue-300'
+                                                      }`}>
+                                                        {sceneImageSources[globalIdx] === 'gemini' ? '✨ Gemini AI'
+                                                          : sceneImageSources[globalIdx] === 'pexels' ? '📷 Pexels'
+                                                          : '🎨 Pollinations'}
+                                                      </span>
+                                                    </div>
+                                                  )}
                                                   <div className="absolute bottom-1 right-1 flex items-center gap-1">
                                                     <button
                                                       onClick={() => setActivePreviewImage({ url: imgUrl, title: `Scene ${globalIdx}` })}
@@ -5211,6 +5232,21 @@ Kembalikan dalam format JSON yang valid:
                                 ) : v.imageUrl ? (
                                   <>
                                     <img src={v.imageUrl} alt={v.title} className="w-full h-full object-cover" />
+                                    {v.imageSource && (
+                                      <div className="absolute top-1.5 left-1.5">
+                                        <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded border ${
+                                          v.imageSource === 'gemini'
+                                            ? 'bg-zinc-900/90 border-zinc-700 text-zinc-300'
+                                            : v.imageSource === 'pexels'
+                                              ? 'bg-emerald-900/90 border-emerald-700 text-emerald-300'
+                                              : 'bg-blue-900/90 border-blue-700 text-blue-300'
+                                        }`}>
+                                          {v.imageSource === 'gemini' ? '✨ Gemini AI'
+                                            : v.imageSource === 'pexels' ? '📷 Pexels'
+                                            : '🎨 Pollinations'}
+                                        </span>
+                                      </div>
+                                    )}
                                     <button
                                       onClick={() => setActivePreviewImage({ url: v.imageUrl, title: v.title })}
                                       className="absolute bottom-2 right-2 p-1.5 rounded bg-zinc-900/90 text-zinc-200 hover:text-white border border-zinc-700"
